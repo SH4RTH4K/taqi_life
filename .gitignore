@@ -1,0 +1,20 @@
+# Local database credentials and generated configuration
+database-config.php
+wp-config.php
+
+# Local runtime/debug files
+error_log
+*.log
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary/import files
+*.tmp
+*.temp
+
+# WordPress runtime media uploads
+wp-content/uploads/

@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://files.imunify360.com/static/crawler-intel/v1/all.schema.json",
+  "title": "Crawler Intel combined data file",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "sources"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema":        { "type": "string" },
+    "schema_version": { "type": "string", "const": "1" },
+    "generated_at":   { "type": "string", "format": "date-time" },
+    "sources": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          { "$ref": "#/definitions/ranges_source" },
+          { "$ref": "#/definitions/signatures_source" },
+          { "$ref": "#/definitions/providers_source" }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "source_base": {
+      "type": "object",
+      "required": ["type", "source_url", "fetched_at", "checksum"],
+      "properties": {
+        "source_url": { "type": "string" },
+        "fetched_at": { "type": "string", "format": "date-time" },
+        "checksum":   { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "ranges_source": {
+      "allOf": [{ "$ref": "#/definitions/source_base" }],
+      "properties": {
+        "type":   { "type": "string", "const": "ranges" },
+        "ranges": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": ["ranges"]
+    },
+    "signatures_source": {
+      "allOf": [{ "$ref": "#/definitions/source_base" }],
+      "properties": {
+        "type":       { "type": "string", "const": "signatures" },
+        "signatures": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      },
+      "required": ["signatures"]
+    },
+    "providers_source": {
+      "allOf": [{ "$ref": "#/definitions/source_base" }],
+      "properties": {
+        "type": { "type": "string", "const": "providers" },
+        "note": { "type": "string" },
+        "providers": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["tokens", "suffixes"],
+            "properties": {
+              "tokens":   { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "suffixes": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["providers"]
+    }
+  }
+}
