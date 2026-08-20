@@ -274,7 +274,7 @@ if ( ! class_exists( 'Astra_Theme_Background_Updater' ) ) {
 		 * @since 2.1.3
 		 * @return array
 		 */
-		public function get_db_update_callbacks() {
+		public static function get_db_update_callbacks() {
 			return self::$db_updates;
 		}
 
@@ -335,6 +335,9 @@ if ( ! class_exists( 'Astra_Theme_Background_Updater' ) ) {
 		 * @return void
 		 */
 		private function update( $fallback ) {
+			// Detach astra-settings option filters (e.g. WPML admin texts) so fallback migrations read raw values and never persist translated strings back.
+			$detached_option_filters = astra_detach_option_filters();
+
 			$current_db_version = astra_get_option( 'theme-auto-version' );
 
 			if ( count( $this->get_db_update_callbacks() ) > 0 ) {
@@ -359,6 +362,8 @@ if ( ! class_exists( 'Astra_Theme_Background_Updater' ) ) {
 				self::$background_updater->push_to_queue( 'update_db_version' );
 			}
 			self::$background_updater->save()->dispatch();
+
+			astra_restore_option_filters( $detached_option_filters );
 		}
 
 		/**
@@ -413,7 +418,7 @@ if ( ! class_exists( 'Astra_Theme_Background_Updater' ) ) {
 
 			delete_transient( 'astra-addon-db-migrated' );
 
-			do_action( 'astra_theme_update_after' );
+			do_action( 'astra_theme_update_after', $saved_version );
 		}
 	}
 }

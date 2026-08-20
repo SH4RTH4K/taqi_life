@@ -42,9 +42,48 @@ if ( ! class_exists( 'Astra_Enqueue_Scripts' ) ) {
 			add_action( 'astra_get_fonts', array( $this, 'add_fonts' ), 1 );
 			add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_scripts' ), 1 );
 			add_action( 'enqueue_block_editor_assets', array( $this, 'gutenberg_assets' ) );
+			add_action( 'enqueue_block_assets', array( $this, 'gutenberg_block_assets' ) );
 			add_filter( 'admin_body_class', array( $this, 'admin_body_class' ) );
 			add_action( 'wp_print_footer_scripts', array( $this, 'astra_skip_link_focus_fix' ) );
 			add_filter( 'gallery_style', array( $this, 'enqueue_galleries_style' ) );
+			add_action( 'wp_body_open', array( $this, 'set_header_break_point_early' ), 1 );
+		}
+
+		/**
+		 * Output an early inline script immediately after <body> opens to apply the
+		 * correct header breakpoint class (`ast-header-break-point`/`ast-desktop`)
+		 * before the header is painted, preventing FOUC on mobile widths.
+		 *
+		 * The script also subscribes to the breakpoint media query, so the body class
+		 * stays in sync when the viewport crosses the breakpoint (browser resize,
+		 * tablet orientation change) even while the main frontend script is still
+		 * loading — e.g. on slow networks or when script execution is deferred by
+		 * optimization plugins. Without this, a stale `ast-header-break-point` class
+		 * left over from a narrower viewport keeps mobile menu styles (stacked menu,
+		 * visible submenus) applied to the desktop header until frontend.js executes.
+		 *
+		 * Script tag attributes are provided by the `header-breakpoint-script`
+		 * context of astra_attr(), so they can be adjusted via the
+		 * `astra_attr_header-breakpoint-script` filter. The default
+		 * `data-cfasync="false"` excludes the script from Cloudflare Rocket Loader
+		 * so it is never deferred past first paint.
+		 *
+		 * @since 4.13.1
+		 * @since 4.13.9 Sync the class in both directions and subscribe to media query
+		 *              changes instead of a one-shot mobile-only check.
+		 * @return void
+		 */
+		public function set_header_break_point_early() {
+			// Skip on AMP — it handles its own layout.
+			if ( astra_is_amp_endpoint() ) {
+				return;
+			}
+			$break_point = astra_header_break_point();
+			?>
+			<script <?php echo astra_attr( 'header-breakpoint-script', array( 'class' => '', 'data-cfasync' => 'false' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped, WordPress.Arrays.ArrayDeclarationSpacing.AssociativeArrayFound -- astra_attr() escapes attribute output. ?>>
+			(function(){var mq=window.matchMedia('(max-width:<?php echo number_format( absint( $break_point ) + 0.99, 2, '.', '' ); ?>px)');function apply(isMobile){var b=document.body.classList;if(isMobile){b.add('ast-header-break-point');b.remove('ast-desktop');}else{b.remove('ast-header-break-point');b.add('ast-desktop');}}apply(mq.matches);if(mq.addEventListener){mq.addEventListener('change',function(e){apply(e.matches);});}else if(mq.addListener){mq.addListener(function(e){apply(e.matches);});}})();
+			</script>
+			<?php
 		}
 
 		/**
@@ -206,7 +245,7 @@ if ( ! class_exists( 'Astra_Enqueue_Scripts' ) ) {
 
 					if ( ! is_customize_preview() ) {
 						$astra_shop_add_to_cart = astra_get_option( 'shop-add-to-cart-action' );
-						if ( $astra_shop_add_to_cart && 'default' !== $astra_shop_add_to_cart ) {
+						if ( $astra_shop_add_to_cart && 'default' !== $astra_shop_add_to_cart && ! is_product() ) {
 							$default_assets['js']['astra-shop-add-to-cart'] = 'shop-add-to-cart';
 						}
 					}
@@ -506,10 +545,19 @@ if ( ! class_exists( 'Astra_Enqueue_Scripts' ) ) {
 
 			/**
 			 * IE Only Js and CSS Files.
+			 * Loads flexibility.js (IE10 flexbox polyfill), Element.matches and
+			 * CustomEvent polyfills, and IE-specific CSS.
 			 */
-			// Flexibility.js for flexbox IE10 support.
-			wp_enqueue_script( 'astra-flexibility', $js_uri . 'flexibility' . $file_prefix . '.js', array(), ASTRA_THEME_VERSION, false );
-			wp_add_inline_script( 'astra-flexibility', 'typeof flexibility !== "undefined" && flexibility(document.documentElement);' );
+			if ( astra_check_is_ie() ) {
+				// Flexibility.js for flexbox IE10 support.
+				wp_enqueue_script( 'astra-flexibility', $js_uri . 'flexibility' . $file_prefix . '.js', array(), ASTRA_THEME_VERSION, false );
+				wp_add_inline_script( 'astra-flexibility', 'typeof flexibility !== "undefined" && flexibility(document.documentElement);' );
+
+				// IE compatibility polyfills (Element.matches, CustomEvent) and IE-specific CSS.
+				wp_enqueue_script( 'astra-ie-compat', $js_uri . 'ie-compat' . $file_prefix . '.js', array(), ASTRA_THEME_VERSION, false );
+				wp_enqueue_style( 'astra-ie-compat', $css_uri . 'ie-compat.min.css', array(), ASTRA_THEME_VERSION, 'all' );
+				wp_style_add_data( 'astra-ie-compat', 'rtl', 'replace' );
+			}
 
 			// Polyfill for CustomEvent for IE.
 			wp_register_script( 'astra-customevent', $js_uri . 'custom-events-polyfill' . $file_prefix . '.js', array(), ASTRA_THEME_VERSION, false );
@@ -758,13 +806,14 @@ if ( ! class_exists( 'Astra_Enqueue_Scripts' ) ) {
 		 * @return void
 		 */
 		public function gutenberg_assets() {
-			/* Directory and Extension */
-			$rtl = '';
-			if ( is_rtl() ) {
-				$rtl = '-rtl';
+			// Skip block editor assets in the customizer — none of the JS/CSS targets customizer DOM.
+			if ( is_customize_preview() ) {
+				return;
 			}
 
-			$js_uri = ASTRA_THEME_URI . 'inc/assets/js/block-editor-script.js';
+			$js_prefix = SCRIPT_DEBUG ? '' : 'minified/';
+			$js_suffix = SCRIPT_DEBUG ? '' : '.min';
+			$js_uri    = ASTRA_THEME_URI . 'inc/assets/js/' . $js_prefix . 'block-editor-script' . $js_suffix . '.js';
 			/** @psalm-suppress InvalidArgument */ // phpcs:ignore Generic.Commenting.DocComment.MissingShort
 			wp_enqueue_script( 'astra-block-editor-script', $js_uri, false, ASTRA_THEME_VERSION, 'all' );
 			/** @psalm-suppress InvalidArgument */ // phpcs:ignore Generic.Commenting.DocComment.MissingShort
@@ -802,8 +851,28 @@ if ( ! class_exists( 'Astra_Enqueue_Scripts' ) ) {
 			);
 
 			wp_localize_script( 'astra-block-editor-script', 'astraColors', apply_filters( 'astra_theme_root_colors', $astra_colors ) );
+		}
 
-			// Render fonts in Gutenberg layout.
+		/**
+		 * Enqueue editor CSS via enqueue_block_assets so WordPress injects them
+		 * into the block editor iframe canvas correctly (WP 6.5+).
+		 *
+		 * @since 4.13.5
+		 * @return void
+		 */
+		public function gutenberg_block_assets() {
+			if ( ! is_admin() ) {
+				return;
+			}
+
+			if ( is_customize_preview() ) {
+				return;
+			}
+
+			/* Directory and Extension */
+			$rtl = is_rtl() ? '-rtl' : '';
+
+			// Render fonts so Google Fonts are enqueued into the iframe.
 			Astra_Fonts::render_fonts();
 
 			if ( astra_block_based_legacy_setup() ) {

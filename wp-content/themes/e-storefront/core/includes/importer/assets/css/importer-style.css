@@ -195,12 +195,12 @@ span.right-span {
   background: #135e96;
 }
 
-.demo-import-box h4 {
+ .demo-import-box h4 {
   font-size: 20px;
   margin: 0;
 }
 .demo-import-box {
-  background: #f9f8ff;
+  background: #ffffff;
   padding: 20px;
   margin-bottom: 15px;
 }
@@ -217,4 +217,4 @@ span.right-span {
 }
 #main-page .notice {
   display: none;
-}  
+}

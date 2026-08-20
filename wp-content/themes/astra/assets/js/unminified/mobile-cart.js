@@ -46,9 +46,10 @@
 		/**
 		 * Returns focus to the triggering element
 		 */
-		returnToTrigger: function() {
+		returnToTrigger: function( preventScroll ) {
+			var focusOptions = preventScroll ? { preventScroll: true } : undefined;
 			if (lastFocusedElement) {
-				lastFocusedElement.focus();
+				lastFocusedElement.focus( focusOptions );
 			} else {
 				// Fallback if we don't have the original element - try multiple selectors
 				var cartIcon = document.querySelector('.ast-header-woo-cart .ast-site-header-cart .ast-site-header-cart-li a.cart-container');
@@ -59,7 +60,7 @@
 					cartIcon = document.querySelector('.ast-header-woo-cart a');
 				}
 				if (cartIcon) {
-					cartIcon.focus();
+					cartIcon.focus( focusOptions );
 				}
 			}
 		},
@@ -175,7 +176,7 @@
 		
 		// Return focus to the element that opened the cart
 		setTimeout(function() {
-			focusManager.returnToTrigger();
+			focusManager.returnToTrigger( true );
 		}, 100);
 	}
 
@@ -341,6 +342,12 @@
 					});
 				}
 			});
+		});
+
+		// Listen for WooCommerce block-based add-to-cart (used by "Hand-picked Products" and "Products by Category" blocks).
+		// These blocks use the Store API (/wc/store/v1) and fire wc-blocks_added_to_cart instead of the classic added_to_cart event.
+		$(document.body).on('wc-blocks_added_to_cart', function () {
+			$(document.body).trigger('astra_refresh_cart_fragments');
 		});
 
 		// Triggering the 'astra_refresh_cart_fragments' event to refresh the cart fragments on page load.

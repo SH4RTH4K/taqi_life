@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Define Constants
  */
-define( 'ASTRA_THEME_VERSION', '4.12.3' );
+define( 'ASTRA_THEME_VERSION', '4.13.10' );
 define( 'ASTRA_THEME_SETTINGS', 'astra-settings' );
 define( 'ASTRA_THEME_DIR', trailingslashit( get_template_directory() ) );
 define( 'ASTRA_THEME_URI', trailingslashit( esc_url( get_template_directory_uri() ) ) );
@@ -132,8 +132,13 @@ if ( is_admin() ) {
 	 */
 	require_once ASTRA_THEME_DIR . 'inc/core/class-astra-admin-settings.php';
 	require_once ASTRA_THEME_DIR . 'admin/class-astra-admin-loader.php';
-	require_once ASTRA_THEME_DIR . 'inc/lib/astra-notices/class-astra-notices.php';
+	require_once ASTRA_THEME_DIR . 'inc/lib/astra-notices/class-bsf-admin-notices.php';
 }
+
+/**
+ * BSF Analytics.
+ */
+require_once ASTRA_THEME_DIR . 'admin/class-astra-bsf-analytics.php';
 
 /**
  * Metabox additions.
@@ -195,6 +200,11 @@ if ( version_compare( PHP_VERSION, '5.3', '>=' ) ) {
 }
 
 require_once ASTRA_THEME_DIR . 'inc/core/markup/class-astra-markup.php';
+
+/**
+ * Abilities API integration.
+ */
+require_once ASTRA_THEME_DIR . 'inc/abilities/bootstrap.php';
 
 /**
  * Load deprecated functions

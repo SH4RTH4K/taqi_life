@@ -16,22 +16,6 @@
  */
 var astraGetParents = function ( elem, selector ) {
 
-	// Element.matches() polyfill.
-	if ( ! Element.prototype.matches) {
-		Element.prototype.matches =
-			Element.prototype.matchesSelector ||
-			Element.prototype.mozMatchesSelector ||
-			Element.prototype.msMatchesSelector ||
-			Element.prototype.oMatchesSelector ||
-			Element.prototype.webkitMatchesSelector ||
-			function(s) {
-				var matches = (this.document || this.ownerDocument).querySelectorAll( s ),
-					i = matches.length;
-				while (--i >= 0 && matches.item( i ) !== this) {}
-				return i > -1;
-			};
-	}
-
 	// Setup parents array.
 	var parents = [];
 
@@ -50,17 +34,6 @@ var astraGetParents = function ( elem, selector ) {
 	return parents;
 };
 
-/**
- * Deprecated: Get all of an element's parent elements up the DOM tree
- *
- * @param  {Node}   elem     The element.
- * @param  {String} selector Selector to match against [optional].
- * @return {Array}           The parent elements.
- */
-var getParents = function ( elem, selector ) {
-	console.warn( 'getParents() function has been deprecated since version 2.5.0 or above of Astra Theme and will be removed in the future. Use astraGetParents() instead.' );
-	astraGetParents( elem, selector );
-}
 
 /**
  * Toggle Class funtion
@@ -77,31 +50,6 @@ var astraToggleClass = function ( el, className ) {
 	}
 };
 
-/**
- * Deprecated: Toggle Class funtion
- *
- * @param  {Node}   elem     The element.
- * @param  {String} selector Selector to match against [optional].
- * @return {Array}           The parent elements.
- */
-var toggleClass = function ( el, className ) {
-	console.warn( 'toggleClass() function has been deprecated since version 2.5.0 or above of Astra Theme and will be removed in the future. Use astraToggleClass() instead.' );
-	astraToggleClass( el, className );
-};
-
-// CustomEvent() constructor functionality in Internet Explorer 9 and higher.
-(function () {
-
-	if (typeof window.CustomEvent === "function") return false;
-	function CustomEvent(event, params) {
-		params = params || { bubbles: false, cancelable: false, detail: undefined };
-		var evt = document.createEvent('CustomEvent');
-		evt.initCustomEvent(event, params.bubbles, params.cancelable, params.detail);
-		return evt;
-	}
-	CustomEvent.prototype = window.Event.prototype;
-	window.CustomEvent = CustomEvent;
-})();
 
 /**
  * Trigget custom JS Event.
@@ -239,10 +187,12 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 	document.addEventListener('click', function (e) {
 		const button = e.target.closest('.menu-toggle');
 		if (button && mobileHeaderType === 'dropdown') {
-			button.classList.toggle('toggled');
+			if (typeof astraAddon === 'undefined') {
+				button.classList.toggle('toggled');
+				syncToggledClass();
+			}
 			const isToggled = button.classList.contains('toggled');
 			button.setAttribute('aria-expanded', isToggled ? 'true' : 'false');
-			syncToggledClass();
 		}
 	});
 	
@@ -408,7 +358,7 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 				popupClose.addEventListener( 'click', removeAstraOffcanvasTrap );
 			}
 			document.addEventListener( 'keyup', function ( event ) {
-				if ( event.keyCode === 27 ) {
+				if ( event.key === 'Escape' ) {
 					removeAstraOffcanvasTrap();
 				}
 			} );
@@ -460,8 +410,7 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 
 			// Close Popup if esc is pressed.
 			document.addEventListener( 'keyup', function ( event ) {
-				// 27 is keymap for esc key.
-				if ( event.keyCode === 27 ) {
+				if ( event.key === 'Escape' ) {
 					event.preventDefault();
 					document.getElementById( 'ast-mobile-popup' ).classList.remove( 'active', 'show' );
 					updateTrigger();
@@ -525,12 +474,25 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 				}
 			}
 
-			// Close Popup on # link click inside Popup.
+			// Close Popup on # link click inside desktop dropdown.
 			if ( desktopDropdownContent ) {
 				var desktopLinks = desktopDropdownContent.getElementsByTagName( 'a' );
 				for ( link = 0, len = desktopLinks.length; link < len; link++ ) {
-					desktopLinks[ link ].addEventListener( 'click', triggerToggleClose, true );
-					desktopLinks[ link ].headerType = 'dropdown';
+					// Check if the link is not inside the tabs container.
+					const isNotInsideTabsContainer = desktopLinks[ link ].closest( '.wp-block-uagb-tabs' ) === null;
+
+					if (
+						null !== desktopLinks[ link ].getAttribute( 'href' ) &&
+						( desktopLinks[ link ].getAttribute( 'href' ).startsWith( '#' ) ||
+							-1 !== desktopLinks[ link ].getAttribute( 'href' ).search( '#' ) ) &&
+						( ! desktopLinks[ link ].parentElement.classList.contains( 'menu-item-has-children' ) ||
+							( desktopLinks[ link ].parentElement.classList.contains( 'menu-item-has-children' ) &&
+								document.querySelector( 'header.site-header' ).classList.contains( 'ast-builder-menu-toggle-icon' ) ) ) &&
+						isNotInsideTabsContainer
+					) {
+						desktopLinks[ link ].addEventListener( 'click', triggerToggleClose, true );
+						desktopLinks[ link ].headerType = 'dropdown';
+					}
 				}
 			}
 
@@ -655,28 +617,31 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 
 	var get_window_width = function () {
 
-		return document.documentElement.clientWidth;
+		return window.innerWidth;
 	}
 
 	/* Add break point Class and related trigger */
 	var updateHeaderBreakPoint = function () {
 
-		// Content overrflowing out of screen can give incorrect window.innerWidth.
-		// Adding overflow hidden and then calculating the window.innerWidth fixes the problem.
-		var originalOverflow = body.style.overflow;
-		body.style.overflow = 'hidden';
 		var ww = get_window_width();
-		body.style.overflow = originalOverflow;
 
 		var break_point = astra.break_point;
 
 		/**
-		 * This case is when one hits a URL one after the other via `Open in New Tab` option
-		 * Chrome returns the value of outer width as 0 in this case.
-		 * This mis-calculates the width of the window and header seems invisible.
-		 * This could be fixed by using `0 === ww` condition below.
+		 * Use matchMedia to evaluate the breakpoint using the same CSS engine that
+		 * evaluates media queries. This guarantees JS and CSS always agree on which
+		 * header should be visible, eliminating any sub-pixel or scrollbar-width
+		 * mismatch between window.innerWidth and the actual CSS viewport width.
+		 *
+		 * The 0.99 offset mirrors the max-width: (break_point + 0.99)px rule used
+		 * in the PHP dynamic CSS, so the transition point is identical in both.
+		 *
+		 * The 0 === ww guard handles a Chrome edge case where innerWidth returns 0
+		 * when opening a URL via "Open in New Tab" — force desktop mode in that case.
 		 */
-		if (ww > break_point || 0 === ww) {
+		var isMobile = window.matchMedia( '(max-width: ' + ( parseFloat( break_point ) + 0.99 ) + 'px)' ).matches;
+
+		if ( ! isMobile || 0 === ww ) {
 			//remove menu toggled class.
 			if ( menu_toggle_all.length > 0 ) {
 
@@ -700,19 +665,27 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 	}
 
 	updateHeaderBreakPoint();
+	body.classList.add( 'ast-header-loaded' );
 
 	AstraToggleSubMenu = function( event ) {
 
 		event.preventDefault();
 
+		var parent_li = this.parentNode;
+
+		// In Link mode, stop the click from bubbling when toggling a parent menu
+		// item's submenu. Without this, the click propagates to document-level
+		// handlers that close the entire dropdown (desktop and mobile).
+		if ( parent_li.classList.contains( 'menu-item-has-children' ) &&
+			document.querySelector( 'header.site-header' ).classList.contains( 'ast-builder-menu-toggle-link' ) ) {
+			event.stopPropagation();
+		}
 
 		if ('false' === event.target.getAttribute('aria-expanded') || ! event.target.getAttribute('aria-expanded')) {
 			event.target.setAttribute('aria-expanded', 'true');
 		} else {
 			event.target.setAttribute('aria-expanded', 'false');
 		}
-
-		var parent_li = this.parentNode;
 
 		if ( parent_li.classList.contains('ast-submenu-expanded') && document.querySelector('header.site-header').classList.contains('ast-builder-menu-toggle-link') ) {
 
@@ -898,29 +871,6 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 		}
 	}, false);
 
-	var get_browser = function () {
-	    var ua = navigator.userAgent,tem,M = ua.match(/(opera|chrome|safari|firefox|msie|trident(?=\/))\/?\s*(\d+)/i) || [];
-	    if(/trident/i.test(M[1])) {
-	        tem = /\brv[ :]+(\d+)/g.exec(ua) || [];
-	        return;
-	    }
-	    if( 'Chrome'  === M[1] ) {
-	        tem = ua.match(/\bOPR|Edge\/(\d+)/)
-	        if(tem != null)   {
-	        	return;
-	        	}
-	        }
-	    M = M[2]? [M[1], M[2]]: [navigator.appName, navigator.appVersion, '-?'];
-	    if((tem = ua.match(/version\/(\d+)/i)) != null) {
-	    	M.splice(1,1,tem[1]);
-	    }
-
-	    if( 'Safari' === M[0] && M[1] < 11 ) {
-			document.body.classList.add( "ast-safari-browser-less-than-11" );
-	    }
-	}
-
-	get_browser();
 
 	/* Search Script */
 	var SearchIcons = document.getElementsByClassName( 'astra-search-icon' );
@@ -966,7 +916,7 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 	/* Hide Dropdown on body click*/
 	body.onclick = function( event ) {
 		if ( typeof event.target.classList !==  'undefined' ) {
-			if ( ! event.target.classList.contains( 'ast-search-menu-icon' ) && astraGetParents( event.target, '.ast-search-menu-icon' ).length === 0 && astraGetParents( event.target, '.ast-search-icon' ).length === 0  ) {
+			if ( ! event.target.classList.contains( 'ast-search-menu-icon' ) && ! event.target.closest( '.ast-search-menu-icon' ) && ! event.target.closest( '.ast-search-icon' )  ) {
 				var dropdownSearchWrap = document.getElementsByClassName( 'ast-search-menu-icon' );
 				for (var i = 0; i < dropdownSearchWrap.length; i++) {
 					dropdownSearchWrap[i].classList.remove( 'ast-dropdown-active' );
@@ -1055,7 +1005,7 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 		if (dropdownToggleLinks) {
 			dropdownToggleLinks.forEach(element => {
 				element.addEventListener('keydown', function (e) {
-					if ('Enter' === e.key) {
+					if ('Enter' === e.key || ' ' === e.key) {
 						// Check if the user is on a mobile device and prevent default and stop propagation if true.
 						if ( /Mobi|Android|iPad|iPhone/i.test( navigator.userAgent ) ) {
 							e.preventDefault();
@@ -1107,6 +1057,111 @@ astScrollToTopHandler = function ( masthead, astScrollTop ) {
 					}
 				}, false);
 			});
+		}
+
+		const desktopMenu = document.querySelectorAll( '#ast-desktop-header .ast-builder-layout-element.ast-builder-menu' );
+		desktopMenu.forEach( menu => {
+			const desktopMenuItems = menu.querySelectorAll( '.main-header-menu .menu-item > a' );
+			desktopMenuItems.forEach( ( item ) => {
+				item.addEventListener( 'focusout', function( e ) {
+					const nextFocus         = e.relatedTarget;
+					const nextFocusMenuItem = nextFocus ? nextFocus.closest( '.menu-item' ) : null;
+					const currentFocus      = e.target;
+					const currentMenuItem   = currentFocus.closest( '.menu-item' );
+					const subMenuOpened     = currentMenuItem.classList.contains( 'ast-menu-hover' );
+					const subMenu           = currentMenuItem.querySelector( '.sub-menu' );
+					const wrapperSubmenu    = currentMenuItem.closest('.sub-menu')
+					const parentMenuItem    = currentMenuItem.closest('.sub-menu')?.closest( '.menu-item-has-children' );
+					const childMenuItem     = currentMenuItem.querySelector( '.menu-item' );
+
+
+					// If the next focus is the same menu item or a child menu item, don't close the submenu.
+					if (
+						currentMenuItem == nextFocusMenuItem ||
+						( childMenuItem && childMenuItem == nextFocusMenuItem )
+					) {
+						return;
+					}
+					
+					// If there's no next focus, close all submenus.
+					if( nextFocusMenuItem == null ) {
+						if ( wrapperSubmenu )
+							recursiveMenuCloseOnblur( wrapperSubmenu );
+						if ( subMenu )
+							recursiveMenuCloseOnblur( subMenu );
+						return;
+					}
+
+					// If the next focus is the next or previous sibling, don't close all the submenu.
+					if (
+						currentMenuItem.nextElementSibling == nextFocusMenuItem ||
+						currentMenuItem.previousElementSibling == nextFocusMenuItem
+					) {
+						// If the submenu is opened, close it and remove the 'ast-menu-hover' class.
+						if( subMenuOpened ) {
+							recursiveMenuCloseOnblur( subMenu, false );
+							currentMenuItem.classList.remove( 'ast-menu-hover' );
+						}
+						return;
+					}
+
+					// If the next focus is the parent menu item, close the submenu till the inner child menu item submenu
+					if ( parentMenuItem && parentMenuItem == nextFocusMenuItem ) {
+						childSubMenu = currentMenuItem.querySelector( '.sub-menu' );
+						recursiveMenuCloseOnblur( childSubMenu, false );
+						return;
+					}
+
+					// Here we are setting a depth level point while traversing from lower to upper submenu parents.
+					// The next focus is the next sibling of any of the parent elements in the tree, then close submenus till that level.
+					let tempParent = parentMenuItem;
+					let subMenuCloseEnd = null;
+					while ( tempParent != null ) {
+						if( tempParent.nextElementSibling == nextFocusMenuItem ) {
+							subMenuCloseEnd = tempParent.querySelector( '.sub-menu' );
+							break;
+						}
+						tempParent = tempParent.closest('.sub-menu')?.closest( '.menu-item-has-children' );
+					}
+
+					// Closes all the menus.
+					if( wrapperSubmenu )
+						recursiveMenuCloseOnblur( wrapperSubmenu, true, subMenuCloseEnd );
+
+				});
+			});
+		});
+	}
+
+	// Recursively closes the submenu upwards
+	function recursiveMenuCloseOnblur( submenu, recursive = true, bubblingEnd = null ) {
+		/**
+		 * Close the submenu
+		 */
+		submenu.classList.remove( 'toggled-on' );
+		submenu.classList.remove( 'astra-megamenu-focus' );
+		const toggle = submenu.closest( '.menu-item-has-children' ).querySelector( '.ast-header-navigation-arrow' );
+		if ( toggle ) {
+			toggle.setAttribute( 'aria-expanded', 'false' );
+		}
+
+		/**
+		 * If there's a bubbling end, set recursive to true. This recursive closing
+		 * the submenu upwards will end till this bubbleEnd element referenced at line 1168
+		 **/
+		if ( bubblingEnd ) {
+			recursive = true;
+		}
+
+		if( ! recursive ) {
+			return;
+		}
+
+		const parentSubmenu = submenu.parentElement.closest( '.sub-menu' );
+		
+		// If there's a parent submenu, close it and continue closing upwards.
+		if( null !== parentSubmenu && submenu !== bubblingEnd ) {
+			recursiveMenuCloseOnblur( parentSubmenu, true, bubblingEnd );
 		}
 	}
 
@@ -1409,7 +1464,7 @@ document.addEventListener('DOMContentLoaded', function () {
         toggle.addEventListener('focus', () => updateAriaExpanded(toggle));
         toggle.addEventListener('blur', () => updateAriaExpanded(toggle));
         toggle.addEventListener('keydown', event => {
-            if (event.key === 'Enter') {
+            if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 toggleAriaExpanded(toggle);
             }

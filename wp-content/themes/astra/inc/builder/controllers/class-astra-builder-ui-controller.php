@@ -77,15 +77,16 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 						switch ( $item['id'] ) {
 
 							case 'phone':
-								$link = 'tel:' . $item['url'];
+								$link = 0 === stripos( $item['url'], 'tel:' ) ? $item['url'] : 'tel:' . $item['url'];
 								break;
 
 							case 'email':
-								$link = 'mailto:' . $item['url'];
+							case 'email_2':
+								$link = 0 === stripos( $item['url'], 'mailto:' ) ? $item['url'] : 'mailto:' . $item['url'];
 								break;
 
 							case 'whatsapp':
-								$link = 'https://api.whatsapp.com/send?phone=' . $item['url'];
+								$link = 0 === stripos( $item['url'], 'http' ) || 0 === stripos( $item['url'], 'whatsapp:' ) ? $item['url'] : 'https://api.whatsapp.com/send?phone=' . $item['url'];
 								break;
 						}
 
@@ -115,7 +116,7 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 						// Handle custom SVG or icon library
 						if ( isset( $item['icon_type'] ) && 'custom' === $item['icon_type'] && ! empty( $item['custom_svg'] ) ) {
 							// Use custom SVG
-							echo '<span aria-hidden="true" class="ahfb-svg-iconset ast-inline-flex svg-baseline">' . $item['custom_svg'] . '</span>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+							echo '<span aria-hidden="true" class="ahfb-svg-iconset ast-inline-flex svg-baseline">' . wp_kses( $item['custom_svg'], Astra_Icons::allowed_svg_args() ) . '</span>';
 						} else {
 							// Use icon library
 							echo self::fetch_svg_icon( $item['icon'] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -130,7 +131,7 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 					}
 				}
 			}
-			echo apply_filters( 'astra_social_icons_after', '' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			echo wp_kses_post( apply_filters( 'astra_social_icons_after', '' ) );
 			echo '</div>';
 			echo '</div>';
 		}
@@ -215,7 +216,41 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 				 */
 				$allowed_html = apply_filters( 'astra_html_widget_allowed_html', $allowed_html, $content );
 
-				echo do_shortcode( wp_kses( $content, $allowed_html ) );
+				// Shield shortcodes from wp_kses(): a raw shortcode used as an attribute value (e.g.
+				// href="[acf ...]") is stripped as invalid markup before it can expand. Expand each
+				// one in isolation, swap in a placeholder, sanitize the author markup, then restore.
+				// Isolated expansion also sidesteps do_shortcodes_in_html_tags(), which leaves a
+				// shortcode unexpanded when its args contain a bare ">" or "<".
+				$ast_shortcode_map = array();
+				if ( $content && function_exists( 'get_shortcode_regex' ) ) {
+					// Unique per-render prefix (uniqid is lightweight) so authored text can never collide with a restore key.
+					$ast_placeholder_prefix = 'ast-shortcode-placeholder-' . uniqid() . '-';
+					$ast_shielded_content   = preg_replace_callback(
+						'/' . get_shortcode_regex() . '/',
+						static function ( $matches ) use ( &$ast_shortcode_map, $ast_placeholder_prefix ) {
+							$placeholder                       = $ast_placeholder_prefix . count( $ast_shortcode_map );
+							$ast_shortcode_map[ $placeholder ] = do_shortcode( $matches[0] );
+							return $placeholder;
+						},
+						$content
+					);
+
+					// preg_replace_callback() returns null on a regex engine failure; keep original content so the widget is not blanked.
+					if ( null !== $ast_shielded_content ) {
+						$content = $ast_shielded_content;
+					} else {
+						$ast_shortcode_map = array();
+					}
+				}
+
+				$content = wp_kses( $content, $allowed_html );
+
+				// strtr() replaces longest keys first in one pass, so "...-1" is never matched inside "...-10".
+				if ( ! empty( $ast_shortcode_map ) ) {
+					$content = strtr( $content, $ast_shortcode_map );
+				}
+
+				echo $content; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Author markup sanitized via wp_kses() above; shortcode output is trusted plugin output.
 				echo '</div>';
 				echo '</div>';
 			}
@@ -287,7 +322,14 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 			}
 			?>
 			<div class="ast-button-wrap">
-				<button type="button" class="menu-toggle main-header-menu-toggle ast-mobile-menu-trigger-<?php echo esc_attr( $toggle_btn_style ); ?>" <?php echo apply_filters( 'astra_nav_toggle_data_attrs', '' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?> <?php echo esc_attr( $aria_controls ); ?> aria-expanded="false" aria-label="<?php echo esc_attr__( 'Main menu toggle', 'astra' ); ?>">
+				<button
+					type="button"
+					class="menu-toggle main-header-menu-toggle ast-mobile-menu-trigger-<?php echo esc_attr( $toggle_btn_style ); ?>"
+					aria-expanded="false"
+					aria-label="<?php echo esc_attr__( 'Main menu toggle', 'astra' ); ?>"
+					<?php echo esc_attr( apply_filters( 'astra_nav_toggle_data_attrs', '' ) ); ?>
+					<?php echo esc_attr( $aria_controls ); ?>
+				>
 					<span class="mobile-menu-toggle-icon">
 						<?php
 							echo self::fetch_svg_icon( $icon ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -322,7 +364,7 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 
 			$button_size = astra_get_option( $builder_type . '-button' . $index . '-size' );
 
-			echo '<div class="ast-builder-button-wrap ast-builder-button-size-' . $button_size . '">'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			echo '<div class="ast-builder-button-wrap ast-builder-button-size-' . esc_attr( $button_size ) . '">';
 			echo astra_get_custom_button( $builder_type . '-button' . $index . '-text', $builder_type . '-button' . $index . '-link-option', 'header-button' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 			echo '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		}
@@ -378,7 +420,7 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 					</button>
 					<div class="astra-cart-drawer-title">
 					<?php
-						echo apply_filters( 'astra_header_cart_flyout_shopping_cart_text', __( 'Shopping Cart', 'astra' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+						echo esc_html( apply_filters( 'astra_header_cart_flyout_shopping_cart_text', __( 'Shopping Cart', 'astra' ) ) );
 					?>
 					</div>
 				</div>
@@ -442,21 +484,22 @@ if ( ! class_exists( 'Astra_Builder_UI_Controller' ) ) {
 
 					$logged_in_text = astra_get_i18n_option( 'header-account-logged-in-text', _x( '%astra%', 'Header Builder: Account Widget - Logged In View Text', 'astra' ) );
 
+					$switch_to_default = true;
 					if ( 'default' !== $account_type && 'default' === $link_type && defined( 'ASTRA_EXT_VER' ) ) {
 						$new_tab = 'target=_self';
 						if ( 'woocommerce' === $account_type && class_exists( 'WooCommerce' ) ) {
-
-							$woocommerce_link = get_permalink( get_option( 'woocommerce_myaccount_page_id' ) );
-
-							$link_url = $woocommerce_link ? $woocommerce_link : '';
+							$woocommerce_link  = get_permalink( get_option( 'woocommerce_myaccount_page_id' ) );
+							$link_url          = $woocommerce_link ? $woocommerce_link : '';
+							$switch_to_default = false;
 
 						} elseif ( 'lifterlms' === $account_type && class_exists( 'LifterLMS' ) ) {
-
-							$lifterlms_link = get_permalink( llms_get_page_id( 'myaccount' ) );
-
-							$link_url = $lifterlms_link ? $lifterlms_link : '';
+							$lifterlms_link    = get_permalink( llms_get_page_id( 'myaccount' ) );
+							$link_url          = $lifterlms_link ? $lifterlms_link : '';
+							$switch_to_default = false;
 						}
-					} elseif ( '' !== $account_link && '' !== $account_link['url'] ) {
+					}
+
+					if ( $switch_to_default && '' !== $account_link && '' !== $account_link['url'] ) {
 
 						$link_url = $account_link['url'];
 

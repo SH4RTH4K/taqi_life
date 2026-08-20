@@ -9,18 +9,25 @@
       } );
     } );
 
-    jQuery( document ).on( 'click', '.notice-get-started-class .notice-dismiss', function () {
-        // Read the "data-notice" information to track which notice
-        // is being dismissed and send it via AJAX
-        var type = jQuery( this ).closest( '.notice-get-started-class' ).data( 'notice' );
-        // Make an AJAX call
-        jQuery.ajax( ajaxurl,
-          {
-            type: 'POST',
-            data: {
-              action: 'e_storefront_dismissed_notice_handler',
-              type: type,
-            }
-          } );
-      } );
+    jQuery(document).ready(function ($) {
+        // Notice dismiss
+        $(document).on('click', '.notice-get-started-class .notice-dismiss', function () {
+            var type = $(this).closest('.notice-get-started-class').data('notice');
+            $.ajax({
+                type: 'POST',
+                url: e_storefront_ajax_object.ajax_url,
+                data: {
+                    action: 'e_storefront_dismissed_notice_handler',
+                    type: type,
+                    nonce: e_storefront_ajax_object.dismiss_nonce
+                },
+                success: function (response) {
+                    if (response.success) {
+                        console.log('Notice dismissed');
+                    }
+                }
+            });
+        });
+    });
+
 }( jQuery ) )

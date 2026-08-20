@@ -3,36 +3,63 @@
  *
  * @package E Storefront
  */
-#lefty  {
+
+ #lefty  {
   display: block;
   float: left;
   width: calc(100% - 450px);
-  padding: 0 15px;
 }
-#description {
+#lefty-up{
+  display: flex;
+  gap: 30px;
+}
+#description{
+  width: 60%;
+} 
+#theme-img {
+  width: 40%;
+}
+#lefty-up #admin_links h3{
+  margin-top: 40px;
+  margin-bottom: 40px;
+}
+#lefty-up, #lefty-down {
   margin: 0 auto;
   line-height: 2;
   background: #FFF;
   padding: 2em;
 }
+#lefty-down{
+  padding-bottom: 40px;
+}
+#lefty-down h3{
+  margin-top: 0;
+}
 #description-insidee {
+  color: #000000;
   overflow-y: auto;
   max-height: 400px;
   padding-right: 20px;
   font-size: 14px;
 }
-#description h3 span {
-  font-weight: normal;
-  font-size: 15px;
+#lefty-down{
+  margin-top: 30px;
+}
+#lefty-down #description-insidee {
+  margin-bottom: 55px;
+}
+#description h3, #lefty-down h3{
+  font-size: 21px;
+  font-weight: 700;
 }
 #description h3 {
-  font-size: 20px;
   margin-top: 0;
 }
 #righty {
   display: block;
   float: left;
-  width: 359px;
+  width: 400px;
+  padding-left: 15px;
 }
 .postboxx .insidee{
   padding: 0;
@@ -73,6 +100,7 @@
 .e-storefront-notice .e-storefront-notice-heading {
   font-size: 18px;
 }
+
 .e-storefront-notice a.button.button-primary {
   background-image: linear-gradient(96deg, #6254e7 0%, #9289f1 100%);
   border: 1px solid;
@@ -81,18 +109,39 @@
   font-weight: bold;
   color: #fff;
 }
-.e-storefront-notice a.button.button-primary:hover,a.button.button-primary.import,a.button.button-success{
+
+.e-storefront-notice a.button.button-primary:hover,input.button.button-primary.import,a.button.button-success, a.button.button-primary.import{
   background-image: linear-gradient(96deg, #F0AC0E 0%, #F56616 100%);
   border: 1px;
   color: #fff;
   font-weight: bold;
 }
-a.button.button-primary.import{
-  padding: 9px 14px;
+
+a.button.button-success {
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
-a.button.button-primary.import:hover{
+
+a.button.button-success:hover{
   background-image: linear-gradient(96deg, #6254e7 0%, #9289f1 100%);
   border: 1px solid;
+  color: #fff;
+}
+
+input.button.button-primary.import{
+  padding: 9px 14px;
+}
+
+input.button.button-primary.import:hover{
+  background-image: linear-gradient(96deg, #6254e7 0%, #9289f1 100%);
+  border: 1px solid;
+}
+
+.diplay-flex-btn {
+  display: flex;
+  gap: 15px;
+  margin-top: 22px;
 }
 
 /* ADMIN HEADER AND LINKS */
@@ -100,16 +149,20 @@ a.button.button-primary.import:hover{
 #admin_links {
   overflow: hidden;
 }
+#admin_inside_links{
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 #admin_links a,#admin_pro_links a,#admin_linkss a,#admin_pro_linkss a {
   display: inline-block;
   float: left;
-  width: 33.333%;
-  width: calc(100% / 4);
-  padding: 1em;
-  letter-spacing: 1px;
+  padding: 6px 20px;
+  border-radius: 6px;
   font-weight: bold;
   text-decoration: none;
-  text-transform: uppercase;
+  text-transform: capitalize;
+  font-size: 16px;
   color: #FFF;
   text-align: center;
   -webkit-box-sizing: border-box;
@@ -127,8 +180,56 @@ a.button.button-primary.import:hover{
   width: calc(100% / 1);
   padding: 15px 10px;
 }
-
-a.blue-button-1, #admin_links a:hover, a.blue-button-2:hover {
+#img-btm-box{
+  text-align: center;
+  border-radius: 6px;
+}
+#img-btm-box .bundle-box-title{
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 24px;
+  margin-top: 0;
+  line-height: 1.2;
+}
+#img-btm-box .bundle-info{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 0 40px;
+  color: #ffffff;
+}
+#img-btm-box .bundle-info .bundle-left .coupon-text{
+  font-size: 16px;
+  margin: 0;
+}
+#img-btm-box .bundle-info .bundle-left .coupon-code{
+  font-size: 16px;
+  font-weight: 800;
+  margin: 3px 0;
+}
+#img-btm-box .bundle-info .bundle-right a span{
+  font-size: 13px;
+  font-weight: 300;
+  text-decoration: line-through;
+  margin-left: 10px
+}
+#img-btm-box .bundle-info .bundle-right a{
+  background-color: #ffffff;
+  border-radius: 6px;
+  color: #000000;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 10px 16px;
+  text-decoration: none;
+  display: block;
+  line-height: 1;
+}
+#img-btm-box{
+  padding: 12px;
+  margin-top: 20px;
+}
+a.blue-button-1, #admin_links a:hover, a.blue-button-2:hover, #img-btm-box {
   background-image: linear-gradient(96deg, #f0ac0e 0%, #ff7426 100%);
 }
 a#customizer, a.blue-button-2 {
@@ -186,16 +287,11 @@ li.points {
   width: 70%;
 }
 .insidee.theme-bundle, .hndle, .insidee p {
-    text-align: center;
+  text-align: center;
 }
 p.offer{
   color: red;
-  font-size: 20px;
-  font-weight: 600;
-}
-.coupon-code{
-  color: green;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
 }
 h3.hndle.bundle, .hndle {
@@ -204,4 +300,38 @@ h3.hndle.bundle, .hndle {
 }
 ul.d-column {
   margin-top: 25px;
+}
+.processing-spinner::after {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-left: 8px;
+    border: 2px solid #3498db;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+#righty .theme-bundle .coupon span{
+  color: green;
+  font-size: 20px;
+  font-weight: 600;
+  display: block;
+}
+a.button.button-primary.import {
+    padding: 9px 14px;
+}
+@media screen and (min-width: 1200px) and (max-width: 1599px){
+  #img-btm-box .bundle-info{
+    padding: 0;
+    flex-direction: column;
+  }
 }

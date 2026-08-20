@@ -671,7 +671,8 @@ function astra_get_site_title_tagline( $display_site_title, $display_site_taglin
 	if ( ! apply_filters( 'astra_disable_site_identity', false ) ) {
 
 		// Site Title.
-		$tag = apply_filters( 'astra_show_site_title_h1_tag', false ) ? 'h1' : 'span';
+		// Restrict H1 to the desktop header to avoid duplicate <h1> when Header Builder renders both desktop and mobile headers.
+		$tag = apply_filters( 'astra_show_site_title_h1_tag', false ) && 'desktop' === $device ? 'h1' : 'span';
 
 		/**
 		 * Filters the site title output.
@@ -1520,7 +1521,7 @@ if ( ! function_exists( 'astra_header_break_point' ) ) {
 	 *
 	 * @since 1.4.0 Added Mobile Header Breakpoint option from customizer.
 	 * @since 1.0.0
-	 * @return number
+	 * @return int
 	 */
 	function astra_header_break_point() {
 		$mobile_header_brakpoint = true === Astra_Builder_Helper::$is_header_footer_builder_active ? astra_get_tablet_breakpoint() : astra_get_option( 'mobile-header-breakpoint', 921 );
@@ -2351,7 +2352,7 @@ add_action( 'astra_header_after', 'astra_setup_article_featured_image' );
 function astra_add_aria_expanded_submenu_items_attr( $output, $item, $depth, $args ) {
 	$classes = empty( $item->classes ) ? array() : (array) $item->classes; // forming classes array if string.
 	if ( in_array( 'menu-item-has-children', $classes ) ) {
-		$output = str_replace( '<a', '<a role="button" aria-expanded="false"', $output );
+		$output = str_replace( '<a', '<a aria-expanded="false"', $output );
 	}
 	return $output;
 }

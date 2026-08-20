@@ -31,6 +31,12 @@ span.custom-label-class {
 }
 a.button.button-primary{
   margin: 4px;
+  min-height: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
 }
 .custom-description-class {
   padding: 0px 10px 0px 10px;

@@ -124,8 +124,8 @@ if ( ! class_exists( 'Astra_Elementor' ) ) {
 						'margin' => '0',
 					),
 					'.elementor-page .ast-menu-toggle' => array(
-						'color'      => 'unset !important',
-						'background' => 'unset !important',
+						'color'      => 'unset',
+						'background' => 'unset',
 					),
 				);
 
@@ -353,8 +353,11 @@ if ( ! class_exists( 'Astra_Elementor' ) ) {
 		 * @return bool True IF Elementor Editor is loaded, False If Elementor Editor is not loaded.
 		 */
 		private function is_elementor_editor() {
-			if ( ( isset( $_REQUEST['action'] ) && 'elementor' === $_REQUEST['action'] ) || isset( $_REQUEST['elementor-preview'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-				return true;
+			// Only trust Elementor editor request parameters for authenticated users with editing capabilities.
+			if ( is_user_logged_in() && current_user_can( 'edit_posts' ) ) {
+				if ( ( isset( $_REQUEST['action'] ) && 'elementor' === $_REQUEST['action'] ) || isset( $_REQUEST['elementor-preview'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+					return true;
+				}
 			}
 
 			return false;
@@ -370,6 +373,11 @@ if ( ! class_exists( 'Astra_Elementor' ) ) {
 		 * @return object
 		 */
 		public function elementor_add_theme_colors( $response, $handler, $request ) {
+
+			// Bail early if the route callback returned an error or an unexpected response type.
+			if ( is_wp_error( $response ) || ! $response instanceof \WP_REST_Response ) {
+				return $response;
+			}
 
 			$route = $request->get_route();
 
@@ -413,6 +421,7 @@ if ( ! class_exists( 'Astra_Elementor' ) ) {
 		 * @return object
 		 */
 		public function display_global_colors_front_end( $response, $handler, $request ) {
+
 			if ( astra_maybe_disable_global_color_in_elementor() ) {
 				return $response;
 			}

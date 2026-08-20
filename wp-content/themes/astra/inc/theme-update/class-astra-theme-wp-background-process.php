@@ -31,10 +31,30 @@ if ( class_exists( 'Astra_WP_Background_Process' ) ) {
 		 *
 		 * @since 2.1.3
 		 *
-		 * @param object $process Queue item object.
+		 * @param mixed $process Queue item to process.
 		 * @return mixed
 		 */
 		protected function task( $process ) {
+
+			if ( ! is_string( $process ) ) {
+				return false;
+			}
+
+			// Only allow known update callback functions — prevents arbitrary function execution
+			// if wp_options is ever written by a compromised source.
+			$allowed_callbacks = array( 'update_db_version' );
+			if ( class_exists( 'Astra_Theme_Background_Updater' ) ) {
+				$db_updates        = Astra_Theme_Background_Updater::get_db_update_callbacks();
+				$allowed_callbacks = array_merge( $allowed_callbacks, array_merge( ...array_values( $db_updates ) ) );
+			}
+
+			if ( ! in_array( $process, $allowed_callbacks, true ) ) {
+				error_log( sprintf( 'Astra: Blocked disallowed background process callback: %s', sanitize_text_field( $process ) ) );
+				return false;
+			}
+
+			// Detach astra-settings option filters (e.g. WPML admin texts) so migrations read raw values and never persist translated strings back.
+			$detached_option_filters = astra_detach_option_filters();
 
 			do_action( 'astra_batch_process_task_' . $process, $process );
 
@@ -45,6 +65,8 @@ if ( class_exists( 'Astra_WP_Background_Process' ) ) {
 			if ( 'update_db_version' === $process ) {
 				Astra_Theme_Background_Updater::update_db_version();
 			}
+
+			astra_restore_option_filters( $detached_option_filters );
 
 			return false;
 		}

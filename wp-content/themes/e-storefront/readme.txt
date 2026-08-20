@@ -2,15 +2,15 @@
 Contributors: misbahwp
 Tags: e-commerce, food-and-drink, blog, one-column, two-columns, three-columns, four-columns, right-sidebar, left-sidebar, grid-layout, custom-background, custom-colors, custom-header, custom-logo, custom-menu, featured-images, footer-widgets, full-width-template, featured-image-header, editor-style, post-formats, rtl-language-support, theme-options, threaded-comments
 Requires at least: 5.0
-Stable tag: 2.8
+Stable tag: 3.4
 Requires PHP: 7.2
-Tested up to: 6.9
+Tested up to: 7.0
 License: GPLv3 or later
 License URI: http://www.gnu.org/licenses/gpl-3.0.html
 
 == Description ==
 
-The E‑Storefront Theme is a modern WooCommerce WordPress theme built for creating high‑conversion online stores tailored to your brand. Designed for seamless shopping cart experience and improved eCommerce conversion performance, it blends speed, usability, and aesthetic design for a professional storefront.Whether you’re selling physical goods, digital products, membership subscriptions, or offering services like electronics eCommerce, grocery delivery websites, organic product shops, fashion footwear stores, or print‑on‑demand businesses, this theme adapts perfectly to diverse retail needs.Its intuitive layout supports easy store navigation, a user‑friendly checkout flow, and customizable sections that help customers complete purchases quickly and securely. The theme allows branded storefront design with flexible templates so store owners can uphold a unique eCommerce identity aligned with their audience.Advanced features such as multi‑vendor marketplace compatibility, shipping and payment gateway integrations, product search filters, smart quick‑view popups, and wishlist functionality enhance the overall shopping experience. With clean visual design, hero banners, and conversion‑focused product grids, it’s perfect for showcasing promotions and featured deals.Included pre‑built storefront demos help you launch quickly with optimized navigation, while the mobile‑first responsive design ensures fast load times across all devices. For digital creators, it supports selling ebooks, online courses, SaaS tools, graphic design assets, stock images, digital soundtracks, and product templates.Built to integrate seamlessly with WooCommerce, the E‑Storefront Theme also works perfectly with the Shortcodes Ultimate plugin for flexible content structuring. Whether you operate a small digital product shop, a niche subscription box business, or a full‑scale online marketplace, this theme delivers a conversion‑optimized eCommerce platform that grows your brand and maximizes profitability.
+The E-Storefront Theme is a modern eCommerce solution based on WooCommerce WordPress, specifically designed for creating high-conversion online stores that perfectly align with your brand. With a strong emphasis on multi-purpose retail flexibility and scalable digital commerce, it offers a seamless shopping experience that enhances eCommerce conversion rates. This responsive shop features an intuitive layout that supports easy store navigation and a user-friendly checkout flow, enabling customers to complete purchases quickly and securely. Whether you are building a creative marketplace, a boutique for handcrafted products, or selling various goods like electronics and fashion items, this theme is adaptable to your retail needs. Advanced functionalities, such as multi-vendor marketplace compatibility, payment gateways, and product search filters, elevate the shopping experience. Its clean visual design, including hero banners and conversion-focused product showcase grids, highlights promotions and featured deals effectively. With included pre-built storefront demos, launching your online store becomes a breeze, and the mobile-first approach ensures fast load performance across all devices. Additionally, it supports digital creators selling products like ebooks and online courses, making it a versatile choice for any business model. Overall, this eCommerce website theme is engineered to boost your brand, maximize profitability, and create a fruitful online shopping experience.
 
 == Changelog ==
 
@@ -126,6 +126,36 @@ The E‑Storefront Theme is a modern WooCommerce WordPress theme built for creat
 * Ensured all customizer settings work properly.
 * Fixed Kirki querySelector console error in customizer.
 
+= 2.9 =  March - 10 - 2026
+
+* Updated discount in getstarted.
+* Fixed dismiss notice issue.
+* Added bundle link in activation notice.
+* Fixed prefixing in activation notice.
+* Updated pot file.
+
+= 3.0 =  April - 18 - 2026
+
+* Updated themes count to 110+ themes.
+* Fixed minor bugs.
+
+= 3.1 =  April - 28 - 2026
+
+* Updated description.
+
+= 3.2 =  May - 8 - 2026
+
+* Updated getstarted.
+
+= 3.3 = June - 18 - 2026
+
+* Updated description.
+* Resolved css for button in customizer.
+* Tested upto - 7.0
+
+
+= 3.4 =
+* Enhanced Theme Compatibility.
 == Resources ==
 
 E Storefront WordPress Theme, Copyright 2025 misbahwp

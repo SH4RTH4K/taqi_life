@@ -1,5 +1,114 @@
 *** Astra Changelog ***
 
+2026-08-19 - version 4.13.10
+* Improvement: Compatibility with WordPress 7.1.
+* Fix: WooCommerce - Coupon code field, Apply coupon and Update cart buttons rendering at mismatched heights on the classic Cart page.
+* Fix: Customizer - Color palette swatches in the color picker showed a wrongly sized focus outline when clicked or tabbed to.
+
+2026-08-11 - version 4.13.9
+* Improvement: Different mobile logo now loads a right-sized image variant instead of the full-size original, improving mobile page speed and LCP.
+* Fix: WPML - Customizer strings like header/footer HTML and button text getting permanently saved in the wrong language when theme updates or setting saves re-wrote options through WPML translation filters.
+* Fix: Search form rendering an invalid `autocomplete` attribute when Live Search is enabled, caused by escaping the whole attribute string instead of only its value.
+* Fix: Shop page meta settings (sidebar, container layout, title, header, footer) no longer override the WooCommerce product search results page layout.
+* Fix: Mobile menu styles briefly applied to the desktop header after resizing or rotating a tablet across the header breakpoint on slow-loading pages.
+* Fix: Read More button missing on search results posts listed after a Beaver Builder page containing a Posts module.
+* Fix: Header Builder - Account element rendered an empty menu instead of the assigned Account Menu when the WooCommerce account menu was enabled and WooCommerce was later deactivated.
+* Fix: Admin notices could occasionally reappear after being dismissed.
+
+2026-07-28 - version 4.13.8
+* Fix: Theme palette colors selected in the Elementor editor reverting to the Customizer default, a regression introduced in 4.13.7.
+
+2026-06-28 - version 4.13.7
+* Improvement: WooCommerce - Added proper spacing between product quantity and subscription price in the checkout order review table when WooCommerce Subscriptions is active, so they no longer appear flush together.
+* Improvement: Social icon Phone, Email, and WhatsApp links no longer get double-prefixed when the entered value already includes tel:, mailto:, or a full WhatsApp link.
+* Fix: Shortcodes in the Header/Footer Builder HTML element, including inside href attributes, no longer stripped during sanitization.
+* Fix: Load Google Fonts Locally failing with a CORS block on single installs serving multiple domains from one filesystem (e.g. WPML "different domains per language"); local font URLs are now root-relative so each domain resolves fonts against its own origin.
+* Fix: Duplicate `id="email"` from the Social Icons Email icon breaking guest checkout with the WooCommerce Checkout block and Stripe.
+* Fix: Desktop toggle dropdown closing when clicking a parent menu item with children in "Dropdown Target: Link" mode.
+* Fix: Handled an edge case on the Elementor globals REST endpoint where a WP_Error returned by the route callback could cause a PHP error.
+
+2026-07-06 - version 4.13.6
+* Fix: Reverted a 4.13.5 change that stripped form elements, style tags, and data attributes from shortcode output in the Header/Footer Builder HTML element.
+* Fix: Body font size rendering as 0px/0% on PHP 8.0+ when the stored desktop value is integer 0, caused by a loose comparison that only masked this on PHP 7.x.
+
+2026-06-30 - version 4.13.5
+* Improvement: Navigation's submenu dropdown arrow touch target size improved for better WCAG 2.5.5 accessibility compliance.
+* Fix: Shortcodes inside href attributes in Header/Footer Builder HTML elements being stripped — caused by wp_kses running before do_shortcode, regression since v4.11.11.
+* Fix: Support widget and AI Assistant hidden from the Astra dashboard when white label is active, preventing Astra branding from being visible to white-label users.
+* Fix: Editor stylesheets triggering "added to iframe incorrectly" console warnings in WP 7.0.
+* Fix: Block editor throwing SecurityError on sites where iframe canvas is cross-origin, by wrapping all iframe document accesses in a safe helper with try-catch.
+* Fix: Page scroll position jumps to top when closing cart flyout drawer, caused by focus returning to the cart icon without preventing scroll.
+* Fix: WooCommerce error log flood caused by passing related products limit as a string instead of an integer to wc_get_related_products().
+* Fix: MCP astra-update-global-palette tool schema corrections to ensure colors and applied_preset are typed correctly.
+* Fix: Incorrect plugin icons for Cart Abandonment Recovery in the "Extend Your Website" dashboard section.
+* Fix: Color picker in the Customizer closing unexpectedly when dragging the panel scrollbar.
+* Fix: Incorrect social icon labels for Vimeo, Twitter, YouTube, WhatsApp, Snapchat, and other brand icons in the SVG icon picker.
+
+2026-06-02 - version 4.13.4
+* New: Added a "Show AI Assistant" toggle in Dashboard Settings to allow users to show or hide the AI Assistant icon from the Astra Dashboard.
+* Fix: Resolved dual header display and header button visibility issues at the mobile/desktop breakpoint.
+* Fix: Accessibility outline toggle not working correctly after importing Astra settings, causing focus outline to persist when disabled or not appear when enabled.
+* Fix: Elementor button hover color overridden by :visited rule due to CSS output order in Astra's inline styles.
+* Fix: Astra's admin scripts no longer override the native window.open globally, preventing conflicts with third-party plugins like WooCommerce.
+* Fix: Prevented PHP fatal in webfont and docs filesystem helpers when running on FTP-based hosts without WordPress credentials.
+* Fix: Customizer controls crashing with TypeError when SVG icons had not finished loading.
+
+2026-05-20 - version 4.13.3
+* New: Added PowerfulDocs AI support widget to the Astra admin dashboard — accessible via the floating Astra icon.
+* Improvement: Compatibility with WordPress 7.0.
+* Improvement: Header Builder menu now respects astra_schema_enabled and astra_site_navigation_schema_enabled filters to control schema markup output.
+* Fix: WPML [wpml-string] shortcode translations falling back to the default language on the frontend after the 4.13.1 update.
+* Fix: WooCommerce star rating clipped to 4 out of 5 stars with the Legacy WooCommerce sidebar widget.
+
+2026-05-12 - version 4.13.2
+* New: Introduced `rem` unit support for line-height and letter-spacing in the Typography customizer controls for better accessibility — `rem` values scale with the user's browser font size preference, unlike fixed `px` values.
+* New: Added WP-CLI commands for managing the Abilities API — list, enable, disable, and inspect individual abilities directly from the command line.
+* Improvement: Off-Canvas close icon no longer shrinks when a scrollbar appears, or popup padding is applied.
+* Fix: Sticky header menu toggle desync — main header burger icon showing close (X) state after sticky header releases.
+* Fix: Multi-selector control clipping long post type labels and rendering HTML entities as literal text.
+* Fix: Customizer white screen on WordPress 6.8+ caused by an unused wp-block-editor script dependency on the customizer controls bundle.
+* Fix: Padding bleed on list and quote blocks in the Separate Container layout in the Block Editor.
+* Fix: Duplicate H1 tags when using the `astra_show_site_title_h1_tag` filter with Header Builder active.
+
+2026-04-27 - version 4.13.1
+* Fix: Mini-cart not refreshing after add-to-cart on WooCommerce "Hand-picked Products" and "Products by Category" blocks.
+* Fix: Customizer strings reverting to admin language on the frontend when using different languages for Admin and Frontend with WPML.
+* Fix: Elementor compatibility CSS overriding Astra customizer toggle button color and background settings on Elementor pages.
+* Fix: Nested submenu hover styles bleeding up to parent menu items.
+* Fix: Header and content flicker (FOUC) on mobile with inline Logo + Site Title + Tagline header layout.
+
+2026-04-16 - version 4.13.0
+* New: Introduced MCP (Model Context Protocol) settings and Abilities API for AI-powered theme management. (https://wpastra.com/docs/astra-mcp/)
+* Improvement: Customizer performance overhaul — faster load times, smoother live preview, and fewer HTTP requests for a lighter, more responsive editing experience.
+* Improvement: Disabled Astra command palette search icon in admin bar for WordPress 7.0+ as it ships a built-in command palette.
+
+2026-04-08 - version 4.12.7
+* Fix: Astra global button styles not applying to Spectra v2 Infobox buttons in the Gutenberg editor.
+* Fix: Product Catalog Add to Cart action affecting Single Product Add to Cart behavior.
+* Fix: PHP fatal error in breadcrumb trail on PHP 8.0+ when taxonomy data is invalid or modified by third-party plugins.
+* Fix: Missing `var()` wrapper on CSS custom property fallbacks in dynamic CSS causing invalid fallback values for dark mode, search fields, header/footer builder, and editor styles.
+
+2026-03-24 - version 4.12.6
+* Improvement: Performance - Removed legacy browser polyfills, optimized asset loading, and reduced frontend payload for improved Core Web Vitals.
+* Improvement: Improved submenu toggle keyboard accessibility for better WCAG compliance.
+* Fix: Header height CSS rule conflicting with sticky header shrink effect when used with "Hide When Scrolling Down" option.
+* Fix: EDD Add to Cart button appearing twice on archive pages.
+
+2026-03-16 - version 4.12.5
+* Fix: LifterLMS course review submission not working due to nonce mismatch.
+* Security: Strengthen theme security and harden against potential vulnerabilities.
+
+2026-03-10 - version 4.12.4
+* New: Added a "Show Learn Tab" toggle in Dashboard Settings to allow users to show or hide the Learn tab from the Astra Dashboard navigation.
+* Improvement: Refined the WooCommerce section UI in the Astra Dashboard with improved layout, hero feature dividers, and better navigation visibility.
+* Improvement: Enhanced submenu accessibility by automatically closing the previous submenu when a new menu item receives focus, ensuring better keyboard navigation.
+* Improvement: Added the filter to allow disabling Astra meta settings on the Elementor editor.
+* Improvement: Ensured all SureCart dark mode styles correctly use the .astra-dark-mode-enable prefix when file generation is enabled.
+* Fix: Scoped WooCommerce quantity CSS to prevent conflicts with third-party number fields (e.g., Ninja Forms).
+* Fix: Resolved invalid meta key registration for excluded post types during REST API requests.
+* Fix: Resolved unwanted spacing in Off-Canvas Menu appearing in certain edge cases.
+* Security: Fixed Stored Cross-Site Scripting via post background meta fields. (Props - Wordfence)
+
 2026-02-06 - version 4.12.3
 * Fix: Resolved WP admin bar search icons styling issues.
 
@@ -13,7 +122,7 @@
 * Improvement: Removed extra padding applied to the WooCommerce Product Collection block.
 * Fix: Resolved the hover layout issue on the “Enroll in this Course” button.
 * Fix: Resolved a menu padding glitch when using the Cambria font via Custom Adobe Fonts.
-* Fix: Resolved an issue with Customizer Reset button display issue on RTL mode.
+* Fix: Resolved an issue with the Customizer Reset button display in RTL mode.
 
 2026-01-06 - version 4.12.0
 * New: Integrated Astra Customizer panels with the WordPress Command Palette, enabling instant access via the Cmd + K / Ctrl + K keyboard shortcut.

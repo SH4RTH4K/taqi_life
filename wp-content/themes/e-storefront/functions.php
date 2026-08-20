@@ -132,8 +132,32 @@ if (!function_exists('e_storefront_enqueue_scripts')) {
 
 	}
 
-	add_action( 'wp_enqueue_scripts', 'e_storefront_enqueue_scripts' );
+add_action( 'wp_enqueue_scripts', 'e_storefront_enqueue_scripts' );
 }
+
+/**
+ * Do not show empty product categories in the storefront navigation.
+ * WooCommerce keeps the category term count updated for published products.
+ */
+function e_storefront_hide_empty_product_category_menu_items( $items, $args ) {
+	if ( empty( $args->theme_location ) || 'main-menu' !== $args->theme_location ) {
+		return $items;
+	}
+
+	foreach ( $items as $key => $item ) {
+		if ( 'product_cat' !== $item->object ) {
+			continue;
+		}
+
+		$term = get_term( (int) $item->object_id, 'product_cat' );
+		if ( $term && ! is_wp_error( $term ) && 0 === (int) $term->count ) {
+			unset( $items[ $key ] );
+		}
+	}
+
+	return $items;
+}
+add_filter( 'wp_nav_menu_objects', 'e_storefront_hide_empty_product_category_menu_items', 10, 2 );
 
 /*-----------------------------------------------------------------------------------*/
 /* Setup theme */
