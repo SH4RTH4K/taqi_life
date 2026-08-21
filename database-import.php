@@ -5,6 +5,14 @@
  * which is read by wp-config.php on the next request.
  */
 
+if ( file_exists( __DIR__ . '/wp-load.php' ) ) {
+    require_once __DIR__ . '/wp-load.php';
+}
+
+if ( function_exists( 'current_user_can' ) && ! current_user_can( 'manage_options' ) ) {
+    wp_die( 'You do not have permission to access the database import utility.' );
+}
+
 session_start();
 
 function taqi_split_sql( $sql ) {
