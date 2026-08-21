@@ -89,6 +89,11 @@ if (!function_exists('e_storefront_enqueue_scripts')) {
 			TRUE
 		);
 
+		// Keep theme scripts from delaying initial HTML/CSS rendering.
+		foreach ( array( 'e-storefront-navigation', 'owl.carousel-js', 'e-storefront-script' ) as $script_handle ) {
+			wp_script_add_data( $script_handle, 'strategy', 'defer' );
+		}
+
 		if ( get_theme_mod( 'e_storefront_animation_enabled', true ) ) {
 		        wp_enqueue_script(
 		            'e-storefront-wow-script',
@@ -97,6 +102,7 @@ if (!function_exists('e_storefront_enqueue_scripts')) {
 		            '1.0',
 		            true
 		        );
+		        wp_script_add_data( 'e-storefront-wow-script', 'strategy', 'defer' );
 
 		        wp_enqueue_style(
 		            'e-storefront-animate',

@@ -30,19 +30,6 @@
                           ?>
                           <h4><a href="<?php echo esc_url(get_term_link($category)); ?>"><?php echo esc_html($category->name); ?></a></h4>
                           <?php
-                          $products = new WP_Query(array(
-                              'posts_per_page' => -1,
-                              'post_type'      => 'product',
-                              'orderby'        => 'title',
-                              'order'          => 'ASC',
-                              'tax_query'      => array(
-                                  array(
-                                      'taxonomy' => 'product_cat',
-                                      'field'    => 'slug',
-                                      'terms'    => $category->slug,
-                                  ),
-                              ),
-                          ));
                       endforeach;
                   endif;
                   ?>
@@ -116,19 +103,6 @@
                               </a>
                           </h4>
                           <?php
-                          $products = new WP_Query(array(
-                              'posts_per_page' => -1,
-                              'post_type'      => 'product',
-                              'orderby'        => 'title',
-                              'order'          => 'ASC',
-                              'tax_query'      => array(
-                                  array(
-                                      'taxonomy' => 'product_cat',
-                                      'field'    => 'slug',
-                                      'terms'    => $category->slug,
-                                  ),
-                              ),
-                          ));
                       endforeach;
                   endif;
                   ?>
