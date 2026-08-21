@@ -4,6 +4,7 @@ namespace JetBackup\Cron\Task;
 
 use JetBackup\Data\Engine;
 use JetBackup\Destination\Destination;
+use JetBackup\Destination\Vendors\Imported\Imported;
 use JetBackup\Exception\DBException;
 use JetBackup\Exception\TaskException;
 use JetBackup\Factory;
@@ -46,6 +47,7 @@ class RetentionCleanup extends Task {
 
 		try {
 			$this->func([$this, '_markManualSnapshots']);
+			$this->func([$this, '_markImportedSnapshots']);
 			$this->func([$this, '_deleteSnapshots']);
 			if($this->getQueueItem()->getStatus() < Queue::STATUS_DONE && !$this->getQueueItem()->getErrors()) $this->getQueueItem()->updateStatus(Queue::STATUS_DONE);
 			else $this->getQueueItem()->updateStatus(Queue::STATUS_PARTIALLY);
@@ -123,6 +125,67 @@ class RetentionCleanup extends Task {
 				$snapshot->save();
 			}
 
+		}
+
+	}
+
+	/**
+	 * Get a list of imported snapshots beyond the retention limit
+	 *
+	 * @return array
+	 * @throws IOException
+	 * @throws InvalidArgumentException
+	 * @throws DBException
+	 */
+	static public function getImportedSnapshots(): array {
+
+		$retentionLimit = Factory::getSettingsGeneral()->getImportedBackupsRetention();
+		if (!$retentionLimit) return []; // 0 means disabled
+
+		$importedDest = Destination::getImportedDestination();
+		if (!$importedDest) return [];
+
+		return Snapshot::query()
+		               ->where([Snapshot::SCHEDULES, 'contains', Schedule::TYPE_IMPORTED])
+		               ->where([Engine::ENGINE, '=', Engine::ENGINE_WP])
+		               ->where([Snapshot::DESTINATION_ID, '=', $importedDest->getId()])
+		               ->orderBy([Snapshot::CREATED => 'desc'])
+		               ->skip($retentionLimit)
+		               ->getQuery()
+		               ->fetch();
+	}
+
+	/**
+	 * Mark imported snapshots for deletion per retention limit
+	 * @return void
+	 * @throws IOException
+	 * @throws InvalidArgumentException
+	 * @throws DBException
+	 */
+	public function _markImportedSnapshots(): void {
+
+		if (!Factory::getSettingsGeneral()->getImportedBackupsRetention()) {
+			$this->getLogController()->logMessage('[_markImportedSnapshots] Imported Backups retention disabled, skipping');
+			return;
+		}
+
+		$this->getLogController()->logMessage('[_markImportedSnapshots] Execution time: ' . $this->getExecutionTimeElapsed());
+		$this->getLogController()->logMessage('[_markImportedSnapshots] TTL time: ' . $this->getExecutionTimeLimit());
+
+		$importedDest = Destination::getImportedDestination();
+		if (!$importedDest) {
+			$this->getLogController()->logMessage('[_markImportedSnapshots] No imported destination found, skipping');
+			return;
+		}
+
+		foreach(self::getImportedSnapshots() as $snapshot_details) {
+			$snapshot = new Snapshot($snapshot_details[JetBackup::ID_FIELD]);
+			$this->getLogController()->logDebug('Marking Imported snapshot for delete: ' . $snapshot->getName() . ' ' . $snapshot->getDestinationName() . ' [ID ' . $snapshot->getDestinationId() . ']');
+			$snapshot->removeSchedule(Schedule::TYPE_IMPORTED);
+            $snapshot->removeSchedule(Schedule::TYPE_MANUALLY);
+			// if there is no more schedules assigned for this snapshot we need to delete it
+			if(!sizeof($snapshot->getSchedules())) $snapshot->setDeleted(time());
+			$snapshot->save();
 		}
 
 	}

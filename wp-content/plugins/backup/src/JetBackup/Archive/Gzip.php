@@ -120,16 +120,28 @@ class Gzip {
 			fseek($gzfd, $info->fdgzpos);
 		}
 
+		$fileSize = DirIteratorFile::safe_filesize($file);
+
 		while(!feof($fd)) {
-			$write += fwrite($gzfd, gzencode(fread($fd, $chunkSize), $compressionLevel));
-			$read += $chunkSize;
+			// Call callback BEFORE the expensive gzencode operation to check execution time
+			// This allows graceful exit before starting work that might exceed time limits
+			if($callback) $callback($read, $fileSize);
+
+			$chunk = fread($fd, $chunkSize);
+			$bytesRead = strlen($chunk);
+
+			if($bytesRead === 0) break;
+
+			$compressed = gzencode($chunk, $compressionLevel);
+			$bytesWritten = fwrite($gzfd, $compressed);
+
+			$read += $bytesRead;
+			$write += $bytesWritten;
 
 			self::_putInfo($info_file, [
 				'fdpos'         => $read,
 				'fdgzpos'       => $write,
 			]);
-
-			if($callback) $callback($read, DirIteratorFile::safe_filesize($file));
 		}
 
 		if(feof($fd)) {
@@ -167,24 +179,29 @@ class Gzip {
 			gzseek($gzfd, $info->fdgzpos);
 		}
 
-		while(!feof($gzfd)) {
-			$write += fwrite($fd, gzread($gzfd, $chunkSize));
-			$read += $chunkSize;
+		$estimatedTotalSize = (int) (DirIteratorFile::safe_filesize($file) * 3); // estimating X3 compression ratio
+
+		while(!gzeof($gzfd)) {
+			// Call callback BEFORE the expensive gzread operation to check execution time
+			if($callback) $callback('Gzip', 'Decompressing', $estimatedTotalSize, $read);
+
+			$chunk = gzread($gzfd, $chunkSize);
+			$bytesRead = strlen($chunk);
+
+			if($bytesRead === 0) break;
+
+			$bytesWritten = fwrite($fd, $chunk);
+
+			$read += $bytesRead;
+			$write += $bytesWritten;
 
 			self::_putInfo($info_file, [
 				'fdpos'         => $write,
 				'fdgzpos'       => $read,
 			]);
-
-			if($callback) $callback(
-				'Gzip',
-				'Decompressing',
-				(int) (DirIteratorFile::safe_filesize($file) * 3),  // estimating X3 compression ratio, just for percentage calc
-				$read)
-			;
 		}
 
-		if(feof($gzfd)) {
+		if(gzeof($gzfd)) {
 			@unlink($file);
 			@unlink($info_file);
 		}

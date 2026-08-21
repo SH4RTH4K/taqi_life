@@ -224,7 +224,7 @@ class IoHelper {
 		$content = $updateContentFunction($content);
 
 		if (!is_string($content)) {
-			$encodedContent = json_encode($content);
+			$encodedContent = json_encode($content, JSON_INVALID_UTF8_SUBSTITUTE);
 			if ($encodedContent === false) {
 				$content = (!is_object($content) && !is_array($content) && !is_null($content)) ? $content : gettype($content);
 				throw new JsonException("Could not encode content with json_encode. Content: \"$content\".");

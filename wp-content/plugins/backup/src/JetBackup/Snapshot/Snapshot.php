@@ -10,6 +10,7 @@ use JetBackup\Cron\Task\Task;
 use JetBackup\Data\Engine;
 use JetBackup\Data\SleekStore;
 use JetBackup\Destination\Destination;
+use JetBackup\Destination\Vendors\Imported\Imported;
 use JetBackup\Entities\Util;
 use JetBackup\Exception\AjaxException;
 use JetBackup\Exception\ArchiveException;
@@ -86,6 +87,7 @@ class Snapshot extends Engine {
 	const PARAM_SITE_URL = 'site_url';
 	const PARAM_DB_PREFIX = 'db_prefix';
 	const PARAM_DB_EXCLUDED = 'db_excluded';
+	const PARAM_WP_CONTENT_ONLY_BACKUP = 'wp_content_only_backup';
 
 	/**
 	 * @var SnapshotItem[]
@@ -345,8 +347,18 @@ class Snapshot extends Engine {
 			$restore->setSnapshotPath($path);
 		} else throw new QueueException("You must provide snapshot id or path");
 
-		// in multisite restore, when restoring subsites $includes will always have values
-		if (Factory::getSettingsRestore()->isRestoreWpContentOnlyEnabled() && empty($include)) {
+		// Check if backup was created with wp-content-only restriction
+		$isWpContentOnlyBackup = false;
+		if ($id) {
+			$snapshot = new Snapshot($id);
+			$isWpContentOnlyBackup = $snapshot->getParam(self::PARAM_WP_CONTENT_ONLY_BACKUP, false);
+		}
+
+		// Apply wp-content-only restriction if:
+		// 1. Current setting is enabled, OR
+		// 2. Backup was originally created with this restriction (WP Cloud or setting was enabled)
+		// Note: in multisite restore, when restoring subsites $includes will already have values
+		if ((Factory::getSettingsRestore()->isRestoreWpContentOnlyEnabled() || $isWpContentOnlyBackup) && empty($include)) {
 			$exclude = [];
 			$include[] = Wordpress::WP_CONTENT . JetBackup::SEP . '*';
 		}
@@ -380,6 +392,160 @@ class Snapshot extends Engine {
 	public static function addToRestoreQueueByPath($path, int $options= QueueItemRestore::OPTION_RESTORE_FILES_ENTIRE | QueueItemRestore::OPTION_RESTORE_DATABASE_ENTIRE, array $exclude=[], array $exclude_db=[], array $include_db=[]) {
 		$include = []; // placeholder for future implementation
 		self::_addToRestoreQueue(0, $path, $options, $exclude, $include, $exclude_db, $include_db);
+	}
+
+	/**
+	 * Import a backup file from a given path and save it to the database.
+	 * This allows the backup to be indexed and restored later without re-uploading.
+	 *
+	 * @param string $path Path to the backup file (tar or tar.gz)
+	 * @param bool $crossDomain Allow cross-domain restores
+	 *
+	 * @return Snapshot The imported and saved snapshot
+	 * @throws QueueException
+	 * @throws InvalidArgumentException
+	 * @throws \SleekDB\Exceptions\IOException
+	 * @throws DBException
+	 * @throws \JetBackup\Exception\DestinationException
+	 */
+	public static function importFromPath(string $path, bool $crossDomain = true): Snapshot {
+		// 1. Validate backup file
+		if (!file_exists($path) || !is_readable($path)) {
+			throw new QueueException("The provided backup file doesn't exist or is not readable");
+		}
+
+		$isCompressed = Archive::isGzCompressed($path);
+		if (!$isCompressed && !Archive::isTar($path)) {
+			throw new QueueException("The provided file is not a valid backup file (tar or tar.gz)");
+		}
+
+		// 2. Extract only meta.json to a temp location
+		$tempDir = Factory::getLocations()->getTempDir() . JetBackup::SEP . 'import_' . Util::generateUniqueId();
+		if (!file_exists($tempDir)) {
+			mkdir($tempDir, 0700, true);
+		}
+
+		$extractPath = $path;
+
+		// If compressed, decompress to temp location first
+		if ($isCompressed) {
+			$decompressedPath = $tempDir . JetBackup::SEP . basename($path, '.gz');
+			\JetBackup\Archive\Gzip::decompress($path, $decompressedPath);
+			$extractPath = $decompressedPath;
+		}
+
+		// Extract only the meta directory from the tar
+		try {
+			$archive = new Archive($extractPath);
+			$archive->setExcludeCallback(function($path, $isDir) {
+				// Exclude everything EXCEPT meta directory files
+				$metaDir = self::SKELETON_META_DIRNAME;
+				return !str_starts_with($path, $metaDir . JetBackup::SEP) && $path !== $metaDir;
+			});
+			$archive->extract($tempDir);
+		} catch (ArchiveException $e) {
+			Util::rm($tempDir);
+			throw new QueueException("Failed to extract backup meta: " . $e->getMessage());
+		}
+
+		// Remove decompressed temp file if we created one
+		if ($isCompressed && file_exists($extractPath)) {
+			unlink($extractPath);
+		}
+
+		// 3. Parse meta.json
+		$metaFile = sprintf(self::META_FILEPATH, $tempDir);
+		if (!file_exists($metaFile)) {
+			Util::rm($tempDir);
+			throw new QueueException("The provided backup doesn't contain a valid meta file");
+		}
+
+		$snapshot = new Snapshot();
+		try {
+			$snapshot->importMeta($metaFile, $crossDomain);
+		} catch (SnapshotMetaException $e) {
+			Util::rm($tempDir);
+			throw new QueueException("Can't import backup: " . $e->getMessage());
+		}
+
+		// Clean up temp meta extraction
+		Util::rm($tempDir);
+
+		// 4. Get or create Imported destination
+		$destination = Destination::createImportedDestination();
+
+		// 5. Generate job identifier for imported backup
+		$jobIdentifier = 'imported_' . Util::generateUniqueId();
+
+		// 6. Check for existing snapshot with same name to avoid duplicates
+		$existing = self::query()
+			->where([self::NAME, '=', $snapshot->getName()])
+			->where([self::DESTINATION_ID, '=', $destination->getId()])
+			->getQuery()
+			->first();
+
+		if ($existing) {
+			// Return existing snapshot, no need to re-import
+			return new Snapshot($existing[JetBackup::ID_FIELD]);
+		}
+
+		// 7. Move backup file to permanent location
+		$destination->connect();
+		$permanentDir = JetBackup::SEP . $jobIdentifier;
+
+		if (!$destination->dirExists($permanentDir)) {
+			$destination->createDir($permanentDir);
+		}
+
+		$backupFilename = $snapshot->getName() . ($isCompressed ? '.tar.gz' : '.tar');
+		$permanentPath = $permanentDir . JetBackup::SEP . $backupFilename;
+
+		// Copy file to permanent location (use copy to preserve original until confirmed)
+		$destination->getInstance()->copyFileToRemote($path, $permanentPath);
+		$destination->disconnect();
+
+        $dataDir = Factory::getLocations()->getDataDir();
+
+        $archiveFilename = basename($permanentPath);
+
+        $extractFolderName = $snapshot->getName();
+
+        $archivePath = $dataDir . JetBackup::SEP. Imported::IMPORTS_DIR . JetBackup::SEP.$jobIdentifier. JetBackup::SEP. $archiveFilename;
+        $extractDir  = $dataDir . JetBackup::SEP. Imported::IMPORTS_DIR . JetBackup::SEP .$jobIdentifier. JetBackup::SEP. $extractFolderName;
+
+        if (!is_dir($extractDir)) {
+            mkdir($extractDir, 0755, true);
+        }
+        try {
+            $archive = new Archive($archivePath);
+            $archive->extract($extractDir);
+        } catch (\Exception $e) {
+            throw new QueueException("Failed to extract imported backup: " . $e->getMessage());
+        }
+        unlink($archivePath);
+        // Remove original uploaded file
+		unlink($path);
+
+		// If the file was decompressed from a .gz file, the original .gz parent dir may now be empty
+		$parentDir = dirname($path);
+		if (is_dir($parentDir) && count(scandir($parentDir)) == 2) {
+			rmdir($parentDir);
+		}
+
+		// 8. Set snapshot fields
+		$snapshot->setDestinationId($destination->getId());
+		$snapshot->setJobIdentifier($jobIdentifier);
+		$snapshot->addParam('imported', true);
+		$snapshot->addParam('import_time', time());
+		$snapshot->addParam('original_filename', basename($path));
+
+		// Add import schedule type for retention tracking
+		$snapshot->addScheduleByType(Schedule::TYPE_IMPORTED);
+
+		// 9. Save snapshot to database
+		$snapshot->save();
+
+		return $snapshot;
 	}
 
 	/**

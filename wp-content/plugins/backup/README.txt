@@ -5,9 +5,9 @@ Author: JetBackup
 Donate link: https://www.jetbackup.com/jetbackup-for-wordpress
 Tags: backup, restore, remote backup
 Requires at least: 6.0
-Tested up to: 6.9.0
+Tested up to: 7.0.2
 Requires PHP: 7.4
-Stable tag: 3.1.18.10
+Stable tag: 3.1.23.3
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,7 +94,41 @@ Yes! JetBackup creates an exact snapshot of your website. When restored, it main
 
 == Changelog ==
 
-= 3.1.18.10 =
+= 3.1.23.3 =
+* Added indication and quick actions once a backup file upload fails.
+* Add option to generate new authorization code when editing existing OneDrive destination.
+* Add missing Quick Access Code button while creating JetBackup Storage.
+* Hardened the public cron endpoint to enforce the cron token on all HTTP invocations.
+
+= 3.1.22.3 =
+* Added support for WordPress Abilities API integration (WordPress 6.9+).
+* Tightened archive extraction security.
+* Fixed some edge cases where failed AJAX requests were not displayed.
+* Fixed a minor GUI issue where the confirmation checkbox was not visible in the Import & Restore dialog.
+* Fixed a PHP notice when aborting a queue item.
+
+= 3.1.21.3 =
+* Fixed S3 multipart upload resume for large files
+* Added support for JetBackup Linux (v5.4+) dedupe engine
+* Fixed a bug where the upload progress indicator could show incorrect percentage when a chunked upload resumes across multiple execution cycles
+
+= 3.1.20.3 =
+* Improved CLI management commands (fixed validation issues, corrected argument handling).
+* Fixed schedule inconsistencies and next-run calculation issues.
+* Improved file handling and cleanup logic in upload processes.
+
+= 3.1.19.8 =
+* Improved compatibility when restoring WordPress.com / WP Cloud-powered backups to non–WP Cloud environments.
+* Socket API integration now shows clearer, more user-friendly compatibility check errors.
+* Imported backups are now indexed, allowing multiple restores from the same backup without re-uploading.
+* Reduced memory usage when indexing server-level backups with paginated fetching, socket timeouts, and progress tracking.
+* Fixed backup failures and queue corruption on systems with non-standard character encodings in file names.
+* Improved error logging – task errors are now visible in the job log within the GUI.
+* Improved execution time handling for systems with low PHP time limits (30 seconds).
+* Fixed potential timeout during compression on resource-constrained environments.
+* Settings validation now only applies to fields that were actually changed, preventing unchanged invalid values from blocking unrelated settings updates.
+
+= 3.1.18.9 =
 * Fix: Improved stability on some servers by preventing a rare cron crash.
 * Tweak: “Available disk space” in System Info is now hidden by default to avoid confusion on quota-based hosts (it may show server-wide free space instead of your quota).
 * Suppressed the WordPress multisite “Upgrade Network” admin notice inside JetBackup's pages

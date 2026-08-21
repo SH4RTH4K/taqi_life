@@ -62,4 +62,16 @@ class FileLogger implements Logger{
 		fflush($this->_fileptr);
 		fclose($this->_fileptr);
 	}
+
+	/**
+	 * Emergency static logger for shutdown handlers where normal logging may not work.
+	 * Uses direct file_put_contents for maximum reliability.
+	 */
+	public static function emergency(string $file, string $message): void {
+		@file_put_contents(
+			$file,
+			date('[Y-m-d H:i:s] ') . $message . PHP_EOL,
+			FILE_APPEND
+		);
+	}
 }

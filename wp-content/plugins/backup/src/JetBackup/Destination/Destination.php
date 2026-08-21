@@ -9,6 +9,7 @@ use JetBackup\Data\DBObject;
 use JetBackup\Data\SleekStore;
 use JetBackup\Destination\Integration\DestinationDirIterator;
 use JetBackup\Destination\Vendors\JetStorage\JetStorage;
+use JetBackup\Destination\Vendors\Imported\Imported;
 use JetBackup\Encryption\Crypt;
 use JetBackup\Destination\Vendors\Local\Local;
 use JetBackup\Entities\Util;
@@ -58,7 +59,7 @@ class Destination extends DBObject {
 	const OPTIONS           = 'options';
 	const DEFAULT           = 'default';
 
-	const LICENSE_EXCLUDED = [Local::TYPE, JetStorage::TYPE];
+	const LICENSE_EXCLUDED = [Local::TYPE, JetStorage::TYPE, Imported::TYPE];
 
 	private ?iDestination $_destination=null;
 	private ?LogController $_logController=null;
@@ -325,6 +326,50 @@ class Destination extends DBObject {
 
 	}
 
+	/**
+	 * Get the Imported destination for storing user-uploaded backup files.
+	 * Returns null if it doesn't exist yet.
+	 *
+	 * @return Destination|null
+	 * @throws InvalidArgumentException
+	 * @throws \SleekDB\Exceptions\IOException|DBException
+	 */
+	public static function getImportedDestination(): ?Destination {
+
+		$result = self::query()
+			->select([JetBackup::ID_FIELD])
+			->where([ self::TYPE, "=", Imported::TYPE ])
+			->getQuery()
+			->first();
+
+		return $result ? new Destination( $result[ JetBackup::ID_FIELD]) : null;
+
+	}
+
+	/**
+	 * Create or get the Imported destination for storing user-uploaded backup files.
+	 * This destination is automatically created on first import.
+	 *
+	 * @throws InvalidArgumentException
+	 * @throws \SleekDB\Exceptions\IOException|DestinationException|DBException
+	 */
+	public static function createImportedDestination():Destination {
+
+		if($destination = self::getImportedDestination()) return $destination;
+
+		$config = new Destination();
+		$config->setType(Imported::TYPE);
+		$config->setName('Imported Backups');
+		$config->setPath('/');
+		$config->setChunkSize(1);
+		$config->setExportConfig(false);
+		$config->setEnabled(true);
+		$config->setReadOnly(true); // Imported destination should be read-only for normal operations
+		$config->save();
+
+		return $config;
+
+	}
 
 	public function createDir($directory) {
 		$this->getInstance()->createDir($directory, true);
@@ -431,6 +476,14 @@ class Destination extends DBObject {
 				$offset = $upload->getOffset();
 				$chunkSize = $upload->getChunkSize() ?: $this->getChunkSizeBytes();
 				$this->getLogController()->logDebug("[copyFileToRemote] [CHUNKED] Offset: " . $offset);
+
+				// On resume, previous cycles already counted the offset bytes in progress.
+				// Subtract them so they aren't double-counted when we re-add per chunk.
+				if($offset && $queue_item) {
+					$progress = $queue_item->getProgress();
+					$progress->setCurrentSubItem(max(0, $progress->getCurrentSubItem() - $offset));
+					$queue_item->save();
+				}
 
 				$file = new FileStream($source);
 				if($offset) $file->seek($offset);

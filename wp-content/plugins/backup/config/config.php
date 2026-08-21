@@ -16,4 +16,5 @@ class JetConfigDefines {
 	const LICENSE_NEXT_CHECK = 1787366672;
 	const LICENSE_LOCAL_KEY = '';
 	const LICENSE_LAST_CHECK = 1787193872;
+	const CURRENT_VERSION = '3.1.18.10';
 }

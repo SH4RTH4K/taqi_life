@@ -15,7 +15,6 @@ class Performance extends Settings {
 	const SECTION = 'performance';
 
 	const EXECUTION_TIME = 'PERFORMANCE_EXECUTION_TIME';
-
 	const READ_CHUNK_SIZE = 'READ_CHUNK_SIZE';
 	const SQL_CLEANUP_REVISIONS = 'SQL_CLEANUP_REVISIONS';
 	const USE_DEFAULT_EXCLUDES = 'USE_DEFAULT_EXCLUDES';
@@ -27,7 +26,7 @@ class Performance extends Settings {
 	const DEFAULT_EXCLUDES = 'DEFAULT_EXCLUDES';
 	const DEFAULT_DB_EXCLUDES = 'DEFAULT_DB_EXCLUDES';
 	const EXECUTION_TIMES =  [0, 10, 20, 30, 40, 50, 60, 120, 300, 600];
-
+    const CHUNK_SIZES = [1, 2, 3, 4, 5 ,6 ,8, 10, 12, 14, 16, 20, 24, 32, 64];
 	/**
 	 * @throws IOException
 	 * @throws ReflectionException
@@ -176,11 +175,20 @@ class Performance extends Settings {
 	 */
 	public function validateFields():void {
 
-		if(!in_array($this->getExecutionTime(), self::EXECUTION_TIMES))
-			throw new FieldsValidationException('Execution time of '. $this->getExecutionTime() . ' is not allowed');
+		$changedFields = self::getChangedFields($this->getData(), (new Performance())->getData());
 
-		$serverExecutionTime = System::getServerExecutionTime();
-		if ($serverExecutionTime > 0 && $this->getExecutionTime() > $serverExecutionTime)
-			throw new FieldsValidationException( 'Execution time of ' . $this->getExecutionTime() . ' seconds cannot be higher than server defaults: ' . $serverExecutionTime);
+        if(in_array(self::READ_CHUNK_SIZE, $changedFields)) {
+            if(!in_array($this->getReadChunkSize(), self::CHUNK_SIZES))
+                throw new FieldsValidationException('Chunk size '. $this->getReadChunkSize() . ' is not allowed');
+        }
+
+		if(in_array(self::EXECUTION_TIME, $changedFields)) {
+			if(!in_array($this->getExecutionTime(), self::EXECUTION_TIMES))
+				throw new FieldsValidationException('Execution time of '. $this->getExecutionTime() . ' is not allowed');
+
+			$serverExecutionTime = System::getServerExecutionTime();
+			if ($serverExecutionTime > 0 && $this->getExecutionTime() > $serverExecutionTime)
+				throw new FieldsValidationException( 'Execution time of ' . $this->getExecutionTime() . ' seconds cannot be higher than server defaults: ' . $serverExecutionTime);
+		}
 	}
 }

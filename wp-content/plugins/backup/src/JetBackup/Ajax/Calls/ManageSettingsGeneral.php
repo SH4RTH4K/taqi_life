@@ -64,6 +64,12 @@ class ManageSettingsGeneral extends aAjax {
 	private function _getManualBackupsRetention(): int { return $this->getUserInput(General::MANUAL_BACKUPS_RETENTION, 0, UserInput::UINT); }
 
 	/**
+	 * @return int
+	 * @throws AjaxException
+	 */
+	private function _getImportedBackupsRetention(): int { return $this->getUserInput(General::IMPORTED_BACKUPS_RETENTION, 10, UserInput::UINT); }
+
+	/**
 	 * @return string
 	 * @throws AjaxException
 	 */
@@ -100,6 +106,7 @@ class ManageSettingsGeneral extends aAjax {
 		if($this->isset(General::ADMIN_TOP_MENU_INTEGRATION)) $settings->setAdminTopMenuIntegration($this->_getAdminTopMenuIntegration());
 		if($this->isset(General::DISPLAY_LOCAL_FREE_DISK_SPACE)) $settings->setDisplayLocalDiskSpace($this->_getDisplayLocalDiskSpace());
 		if($this->isset(General::MANUAL_BACKUPS_RETENTION)) $settings->setManualBackupsRetention($this->_getManualBackupsRetention());
+		if($this->isset(General::IMPORTED_BACKUPS_RETENTION)) $settings->setImportedBackupsRetention($this->_getImportedBackupsRetention());
 		if($this->isset(General::PHP_CLI_LOCATION)) $settings->setPHPCLILocation($this->_getPHPCLILocation());
 		if($this->isset(General::ALTERNATE_WP_CONFIG_LOCATION)) $settings->setAlternateWpConfigLocation($this->_getAlternateWpConfigLocation());
 		if($this->isset(General::MYSQL_DEFAULT_PORT)) $settings->setMysqlDefaultPort($this->_getMysqlDefaultPort());

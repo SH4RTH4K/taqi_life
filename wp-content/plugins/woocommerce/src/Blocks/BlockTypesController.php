@@ -9,6 +9,7 @@ use Automattic\WooCommerce\Blocks\Integrations\IntegrationRegistry;
 use Automattic\WooCommerce\Blocks\BlockTypes\Cart;
 use Automattic\WooCommerce\Blocks\BlockTypes\Checkout;
 use Automattic\WooCommerce\Blocks\BlockTypes\MiniCartContents;
+use Automattic\WooCommerce\Internal\ShopperLists\ShopperListsController;
 
 /**
  * BlockTypesController class.
@@ -61,9 +62,9 @@ final class BlockTypesController {
 		add_filter( 'render_block', array( $this, 'add_data_attributes' ), 10, 2 );
 		add_action( 'woocommerce_login_form_end', array( $this, 'redirect_to_field' ) );
 		add_filter( 'widget_types_to_hide_from_legacy_widget_block', array( $this, 'hide_legacy_widgets_with_block_equivalent' ) );
-		add_action( 'woocommerce_delete_product_transients', array( $this, 'delete_product_transients' ) );
 		add_filter( 'register_block_type_args', array( $this, 'enqueue_block_style_for_classic_themes' ), 10, 2 );
 		add_filter( 'block_core_breadcrumbs_post_type_settings', array( $this, 'set_product_breadcrumbs_preferred_taxonomy' ), 10, 3 );
+		add_filter( 'block_core_breadcrumbs_items', array( $this, 'apply_woocommerce_breadcrumb_filters' ), 10, 1 );
 	}
 
 	/**
@@ -359,9 +360,12 @@ final class BlockTypesController {
 
 	/**
 	 * Delete product transients when a product is deleted.
+	 *
+	 * @deprecated since 10.6.0
+	 * @return void
 	 */
 	public function delete_product_transients() {
-		delete_transient( 'wc_blocks_has_downloadable_product' );
+		wc_deprecated_function( __METHOD__, '10.6.0' );
 	}
 
 	/**
@@ -378,6 +382,7 @@ final class BlockTypesController {
 			'CatalogSorting',
 			'ClassicShortcode',
 			'CustomerAccount',
+			'Dropdown',
 			'FeaturedCategory',
 			'FeaturedProduct',
 			'MiniCart',
@@ -446,6 +451,7 @@ final class BlockTypesController {
 			'ComingSoon',
 			'CouponCode',
 			'CustomerAccount',
+			'Dropdown',
 			'EmailContent',
 			'FeaturedCategory',
 			'FeaturedProduct',
@@ -550,6 +556,15 @@ final class BlockTypesController {
 			MiniCartContents::get_mini_cart_block_types()
 		);
 
+		if ( wc_get_container()->get( ShopperListsController::class )->is_enabled( 'saved-for-later' ) ) {
+			$block_types[] = 'SavedForLater';
+		}
+
+		if ( wc_get_container()->get( ShopperListsController::class )->is_enabled( 'wishlist' ) ) {
+			$block_types[] = 'Wishlist';
+			$block_types[] = 'AddToWishlistButton';
+		}
+
 		if ( wp_is_block_theme() ) {
 			$block_types[] = 'AddToCartWithOptions\AddToCartWithOptions';
 			$block_types[] = 'AddToCartWithOptions\QuantitySelector';
@@ -557,7 +572,6 @@ final class BlockTypesController {
 			$block_types[] = 'AddToCartWithOptions\VariationSelector';
 			$block_types[] = 'AddToCartWithOptions\VariationSelectorAttribute';
 			$block_types[] = 'AddToCartWithOptions\VariationSelectorAttributeName';
-			$block_types[] = 'AddToCartWithOptions\VariationSelectorAttributeOptions';
 			$block_types[] = 'AddToCartWithOptions\GroupedProductSelector';
 			$block_types[] = 'AddToCartWithOptions\GroupedProductItem';
 			$block_types[] = 'AddToCartWithOptions\GroupedProductItemSelector';
@@ -730,5 +744,53 @@ final class BlockTypesController {
 		}
 
 		return $settings;
+	}
+
+	/**
+	 * Apply WooCommerce breadcrumb filters to Core breadcrumbs block items.
+	 *
+	 * This bridges the Core breadcrumbs block with WooCommerce's legacy breadcrumb filters,
+	 * ensuring backward compatibility for sites that have customized breadcrumbs using
+	 * the `woocommerce_get_breadcrumb` filter.
+	 *
+	 * @param array $items Array of breadcrumb items from Core.
+	 * @return array Modified breadcrumb items.
+	 *
+	 * @internal
+	 */
+	public function apply_woocommerce_breadcrumb_filters( $items ) {
+		// Convert Core format to WooCommerce format.
+		// Core: array( 'url' => '...', 'label' => '...' )
+		// Woo: array( 'label', 'url' ).
+		$wc_crumbs = array_map(
+			function ( $item ) {
+				return array(
+					$item['label'] ?? '',
+					$item['url'] ?? '',
+				);
+			},
+			$items
+		);
+
+		/**
+		 * Filters the breadcrumb trail array.
+		 *
+		 * @since 2.3.0
+		 *
+		 * @param array         $crumbs The breadcrumb trail.
+		 * @param \WC_Breadcrumb|null $breadcrumb The breadcrumb object (null when called from Core block).
+		 */
+		$wc_crumbs = apply_filters( 'woocommerce_get_breadcrumb', $wc_crumbs, null );
+
+		// Convert back to Core format.
+		return array_map(
+			function ( $crumb ) {
+				return array(
+					'label' => $crumb[0] ?? '',
+					'url'   => $crumb[1] ?? '',
+				);
+			},
+			$wc_crumbs
+		);
 	}
 }

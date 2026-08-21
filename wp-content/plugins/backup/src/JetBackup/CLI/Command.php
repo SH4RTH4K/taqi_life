@@ -725,19 +725,13 @@ class Command {
      * [--backup_path=<path>]
      * : Define the directory path on the remote server for storing backups. Make sure it’s writable and uniquely identifies the domain (e.g., /backups/domain.com/).
      *
-     * [--enabled=<enabled>]
-     * : Set destination enabled or disabled
-     *
-     * [--export_config=<export_config>]
-     * : Set export config enabled or disabled
-     *
      * [--options=<json-options>]
      * : Provide connection details and other advanced options in JSON format.
      * Example: '{"host":"sftp_host","username":"sftp_user","password":"sftp_pass","port":22,"timeout":60,"retries":5}'
      *
      * ## EXAMPLES
      *
-     *     wp jetbackup manageDestination --id=5 --name="sftp" --enabled=0 --export_config=0 --chunk_size=1 --free_disk=0 --backup_path=/foo/boo --notes="This is a note" --options='{"host":"sftp_host","username":"sftp_user","password":"sftp_pass","port":22,"timeout":60,"retries":5}'
+     *     wp jetbackup manageDestination --id=5 --name="sftp"--chunk_size=1 --free_disk=0 --backup_path=/foo/boo --notes="This is a note" --options='{"host":"sftp_host","username":"sftp_user","password":"sftp_pass","port":22,"timeout":60,"retries":5}'
      *     wp jetbackup manageDestination --id=5 --name="google" --type=GoogleDrive --backup_path=/foo/boo --options='{"access_code":"YOU_ACCESS_CODE_HERE"}'
      *
      * @when after_wp_load
@@ -833,6 +827,9 @@ class Command {
      * [--manual_backups_retention=<int>]
      * : This setting determines how many manual backups to keep per destination. Set to 0 to disable retention and never delete backups.
      *
+     * [--imported_backups_retention=<int>]
+     * : This setting determines how many imported backups to keep. Set to 0 to disable retention and never delete imported backups. Default: 10.
+     *
      * [--alternate_wp_config_location=<path>]
      * : Use this if your hosting provider uses a non-default wp-config location
      *
@@ -844,7 +841,7 @@ class Command {
      *
      * ## EXAMPLES
      *
-     *     wp jetbackup manageSettingsGeneral --license_key=xxxx --timezone=UTC --jetbackup_integration=1 --manual_backups_retention=0 --alternate_wp_config_location /home/user/config/wp-config.php --php_cli_location=/usr/bin/php --mysql_default_port=3306
+     *     wp jetbackup manageSettingsGeneral --license_key=xxxx --timezone=UTC --jetbackup_integration=1 --manual_backups_retention=0 --imported_backups_retention=10 --alternate_wp_config_location /home/user/config/wp-config.php --php_cli_location=/usr/bin/php --mysql_default_port=3306
      *
      * @when after_wp_load
      */
@@ -856,19 +853,25 @@ class Command {
 	 *
 	 * ## OPTIONS
 	 *
-	 * [--debug=<debug>]
+	 * [--debug_log=<debug_log>]
 	 * : enable or disable debug logging.
 	 *
-	 * [--log_rotate=<log_rotate>]
+	 * [--log_rotate=<bool>]
 	 * : specify the number of days to retain log files. older logs beyond this duration will be automatically deleted. set this value to 0 to keep logs indefinitely.
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp jetbackup manageSettingsLogging --debug=1 --log_rotate=7
+	 *     wp jetbackup manageSettingsLogging --debug2=1 --log_rotate=7
 	 *
 	 * @when after_wp_load
 	 */
-	public function manageSettingsLogging($args, $flags) { self::_command(__FUNCTION__, $args, self::_keyToUpper($flags)); }
+	public function manageSettingsLogging($args, $flags) {
+        // 'debug' is reserved by WP-CLI, so we cannot use it directly as a flag.
+        //// Map our custom 'debug_log' flag to 'debug' internally.
+        $flags['debug'] = $flags['debug_log'] ?? 0; // fallback to 0 if not set
+        self::_command(__FUNCTION__, $args, self::_keyToUpper($flags));
+
+    }
 
 
 	/**
@@ -911,13 +914,33 @@ class Command {
 	 * [--alternate_email=<alternate_email>]
 	 * : set an alternate email address for notifications instead of the default admin email.
 	 *
+     * [--notification_levels_frequency=<notification_levels_frequency>]
+     * : JSON string for notification levels frequency.
+     *     Levels:
+     *      1 = Information
+     *      2 = Warning
+     *      4 = Error
+     *
+     *     Frequency:
+     *         0 = Disabled
+     *         1 = Real Time
+     *         2 = Once a day
+     *     Example: '{"1":2,"2":0,"4":2}'
+     *
 	 * ## EXAMPLES
 	 *
 	 *     wp jetbackup manageSettingsNotifications --emails=1 --alternate_email=youremail@gmail.com
 	 *
 	 * @when after_wp_load
 	 */
-	public function manageSettingsNotifications($args, $flags) { self::_command(__FUNCTION__, $args, self::_keyToUpper($flags)); }
+	public function manageSettingsNotifications($args, $flags) {
+        if (isset($flags['notification_levels_frequency'])) {
+            $decoded = json_decode($flags['notification_levels_frequency'], true);
+            $flags['notification_levels_frequency'] = $decoded;
+        }
+        self::_command(__FUNCTION__, $args, self::_keyToUpper($flags));
+
+    }
 
 
 	/**
@@ -928,7 +951,7 @@ class Command {
 	 * [--read_chunk_size=<read_chunk_size>]
 	 * : set the chunk size for file uploads. affects upload speed and stability.
 	 *
-	 * [--execution_time=<execution_time>]
+	 * [--performance_execution_time=<performance_execution_time>]
 	 * : define the maximum execution time (in seconds) for queued tasks. applies only to web-based tasks.
 	 *
 	 * [--sql_cleanup_revisions=<sql_cleanup_revisions>]
@@ -951,7 +974,7 @@ class Command {
 	 *
 	 * ## EXAMPLES
 	 *
-	 *     wp jetbackup manageSettingsPerformance --read_chunk_size=2097152 --execution_time=10 --sql_cleanup_revisions=1 --use_default_excludes=1 --gzip_compress_archive=1
+	 *     wp jetbackup manageSettingsPerformance --read_chunk_size=2097152 --performance_execution_time=10 --sql_cleanup_revisions=1 --use_default_excludes=1 --gzip_compress_archive=1
 	 *
 	 * @when after_wp_load
 	 */
@@ -972,8 +995,8 @@ class Command {
 	 * [--restore_alternate_path=<bool>]
 	 * : enable (1) or disable (0) using alternate public restore path
 	 *
-	 *  [--restore_wp_content_only=<bool>]
-	 *  : enable (1) or disable (0) limit restore to wp-content folder only
+     * [--restore_wp_content_only=<bool>]
+     * : enable (1) or disable (0) limit restore to wp-content folder only
 	 *
 	 * ## EXAMPLES
 	 *
@@ -1011,6 +1034,12 @@ class Command {
 	 * [--mfa_enabled=<bool>]
 	 * : enable (1) or disable (0) two-factor authentication for additional security.
 	 *
+	 * [--abilities_enabled=<bool>]
+	 * : enable (1) or disable (0) the read-only WordPress Abilities API surface (WordPress 6.9+).
+	 *
+	 * [--mfa_allow_abilities=<bool>]
+	 * : enable (1) or disable (0) Abilities API access while two-factor authentication is enabled.
+	 *
 	 * [--alternate_data_folder=<alternate_data_folder>]
 	 * : specify a custom data directory for storing configuration and backup data.
 	 *
@@ -1020,6 +1049,7 @@ class Command {
 	 * ## EXAMPLES
 	 *
 	 *     wp jetbackup manageSettingsSecurity --mfa_enabled=1 --daily_checksum_check=1 --alternate_data_folder=/custom/path
+	 *     wp jetbackup manageSettingsSecurity --abilities_enabled=1 --mfa_allow_abilities=0
 	 *
 	 * @when after_wp_load
 	 */

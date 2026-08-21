@@ -114,18 +114,24 @@ class Notifications extends Settings {
 	 */
 	public function validateFields():void {
 
-		$frequency = $this->getAlertLevelFrequency();
+		$changedFields = self::getChangedFields($this->getData(), (new Notifications())->getData());
 
-		foreach ($frequency as $key => $value) {
+		if(in_array(self::NOTIFICATION_LEVELS_FREQUENCY, $changedFields)) {
+			$frequency = $this->getAlertLevelFrequency();
 
-			if (!($key & Alert::LEVELS)) 
-				throw new FieldsValidationException("Invalid alert level key: $key");
+			foreach ($frequency as $key => $value) {
 
-			if (!in_array($value, self::NOTIFICATION_FREQUENCIES))
-				throw new FieldsValidationException("Invalid frequency value for $key: $value");
+				if (!($key & Alert::LEVELS))
+					throw new FieldsValidationException("Invalid alert level key: $key");
+
+				if (!in_array($value, self::NOTIFICATION_FREQUENCIES))
+					throw new FieldsValidationException("Invalid frequency value for $key: $value");
+			}
 		}
 
-		if ($this->getAlternateEmail() && !Wordpress::isEmail($this->getAlternateEmail())) 
-			throw new FieldsValidationException("Email " . $this->getAlternateEmail() . " is not valid");
+		if(in_array(self::ALTERNATE_EMAIL, $changedFields)) {
+			if ($this->getAlternateEmail() && !Wordpress::isEmail($this->getAlternateEmail()))
+				throw new FieldsValidationException("Email " . $this->getAlternateEmail() . " is not valid");
+		}
 	}
 }

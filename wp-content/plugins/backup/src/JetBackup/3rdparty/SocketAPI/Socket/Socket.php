@@ -16,12 +16,18 @@ use JetBackup\SocketAPI\Message\MessageWriter;
 
 class Socket {
 
+	private static int $_readTimeout = 120;
+	private static int $_writeTimeout = 30;
+
 	private $_socket;
 	private $_stream;
 	private $_file;
 
 	private $_reader;
 	private $_writer;
+
+	public static function setReadTimeout(int $seconds):void { self::$_readTimeout = max($seconds, 5); }
+	public static function setWriteTimeout(int $seconds):void { self::$_writeTimeout = max($seconds, 5); }
 
 	/**
 	 * Socket constructor.
@@ -76,6 +82,9 @@ class Socket {
 		if($isServer && file_exists($this->getFile())) @unlink($this->getFile());
 		if (!file_exists($this->getFile()) || !is_readable($this->getFile())) throw new SocketException("Could not connect to socket (not exist).");
 		if(!@socket_connect($this->getSocketResource(), $this->getFile())) throw new SocketException("Could not connect to socket (socket error).");
+		// Set socket timeouts to prevent blocking forever if the server doesn't respond
+		socket_set_option($this->getSocketResource(), SOL_SOCKET, SO_RCVTIMEO, ['sec' => self::$_readTimeout, 'usec' => 0]);
+		socket_set_option($this->getSocketResource(), SOL_SOCKET, SO_SNDTIMEO, ['sec' => self::$_writeTimeout, 'usec' => 0]);
 	}
 
 	/**

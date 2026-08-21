@@ -71,6 +71,11 @@ class Logging extends Settings {
 	 * @return void
 	 */
 	public function validateFields():void {
-		if($this->getLogRotate() < 0) throw new FieldsValidationException("Log rotation must be a positive integer");
+
+		$changedFields = self::getChangedFields($this->getData(), (new Logging())->getData());
+
+		if(in_array(self::LOG_ROTATE, $changedFields)) {
+			if($this->getLogRotate() < 0) throw new FieldsValidationException("Log rotation must be a positive integer");
+		}
 	}
 }

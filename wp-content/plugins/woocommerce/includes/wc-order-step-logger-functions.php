@@ -37,7 +37,16 @@ function wc_log_order_step( string $message, ?array $context = null, bool $final
 		}
 
 		if ( $first_step ) {
-			$logging_active = true;
+			/**
+			 * Filters whether order step logging is enabled.
+			 *
+			 * Evaluated once per logging session, so that a checkout is either logged in full or not at all.
+			 *
+			 * @param bool $enabled Whether order step logging is enabled. Default true.
+			 *
+			 * @since 11.0.1
+			 */
+			$logging_active = (bool) apply_filters( 'woocommerce_order_step_logging_enabled', true );
 		}
 
 		if ( ! $logging_active ) {
@@ -87,7 +96,9 @@ function wc_log_order_step( string $message, ?array $context = null, bool $final
 			if ( $order && ( count( array_unique( $steps ) ) === count( $steps ) ) ) {
 				$order->delete_meta_data( '_debug_log_source' );
 				if ( OrderUtil::unknown_orders_data_store_in_use() ) {
-					$logger->clear( $context['source'] );
+					if ( $logger instanceof WC_Logger ) {
+						$logger->clear( $context['source'] );
+					}
 					$order->save();
 				} else {
 					$order->add_meta_data( '_debug_log_source_pending_deletion', $context['source'], true );

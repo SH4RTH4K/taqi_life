@@ -6,6 +6,7 @@ if (!defined( '__JETBACKUP__')) die('Direct access is not allowed');
 
 
 use JetBackup\Ajax\aAjax;
+use JetBackup\BackupJob\BackupJob;
 use JetBackup\Exception\AjaxException;
 use JetBackup\Exception\DBException;
 use JetBackup\Exception\FieldsValidationException;
@@ -73,6 +74,24 @@ class ManageSchedule extends aAjax {
 
 		$schedule->validateFields();
 		$schedule->save();
+
+        $jobs = BackupJob::query()
+            ->select([JetBackup::ID_FIELD])
+            ->getQuery()
+            ->fetch();
+
+        foreach ($jobs as $jobData) {
+            $job = new BackupJob($jobData[JetBackup::ID_FIELD]);
+
+            foreach ($job->getSchedules() as $scheduleItem) {
+                if ($scheduleItem->getId() == $schedule->getId()) {
+                    // update next_run on backup job
+                    $job->calculateNextRun();
+                    $job->save();
+                    break;
+                }
+            }
+        }
 
 		$this->setResponseMessage('Success');
 		$this->setResponseData($this->isCLI() ? $schedule->getDisplayCLI() : $schedule->getDisplay());

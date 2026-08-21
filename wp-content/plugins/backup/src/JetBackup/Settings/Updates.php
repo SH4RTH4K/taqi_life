@@ -77,6 +77,11 @@ class Updates extends Settings {
 	 * @throws FieldsValidationException
 	 */
 	public function validateFields():void {
-		if(!in_array($this->getUpdateTier(), self::TIERS)) throw new FieldsValidationException("Invalid tier provided");
+
+		$changedFields = self::getChangedFields($this->getData(), (new Updates())->getData());
+
+		if(in_array(self::UPDATE_TIER, $changedFields)) {
+			if(!in_array($this->getUpdateTier(), self::TIERS)) throw new FieldsValidationException("Invalid tier provided");
+		}
 	}
 }

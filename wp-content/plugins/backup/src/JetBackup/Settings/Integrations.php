@@ -61,11 +61,15 @@ class Integrations extends Settings {
 	 * @throws AjaxException
 	 */
 	public function validateFields():void {
-		$missing = array_diff($this->getInegrations(), self::INTEGRATION_DEFAULTS);
 
-		if (!empty($missing)) {
-			throw new AjaxException("The following integrations are not supported: " . implode(', ', $missing));
+		$changedFields = self::getChangedFields($this->getData(), (new Integrations())->getData());
+
+		if(in_array(self::INTEGRATIONS, $changedFields)) {
+			$missing = array_diff($this->getInegrations(), self::INTEGRATION_DEFAULTS);
+
+			if (!empty($missing)) {
+				throw new AjaxException("The following integrations are not supported: " . implode(', ', $missing));
+			}
 		}
-
 	}
 }

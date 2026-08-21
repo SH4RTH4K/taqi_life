@@ -52,8 +52,11 @@ class JetBackupLinux {
 	const BACKUP_STRUCTURE_ARCHIVED     = 2;
 	const BACKUP_STRUCTURE_COMPRESSED   = 4;
 
+    const BACKUP_STRUCTURE_DEDUPLICATION = 8;
 
-	const QUEUE_STATUS_RESTORE_ACCOUNT_CONFIG = 30;
+
+
+    const QUEUE_STATUS_RESTORE_ACCOUNT_CONFIG = 30;
 	const QUEUE_STATUS_RESTORE_ACCOUNT_DOMAINS = 31;
 	const QUEUE_STATUS_RESTORE_ACCOUNT_CERTIFICATES = 32;
 	const QUEUE_STATUS_RESTORE_ACCOUNT_FTP = 33;
@@ -109,7 +112,7 @@ class JetBackupLinux {
 
 	const MINIMUM_VERSION = '5.3.15';
 
-	private function __construct() {}
+    private function __construct() {}
 	
 	public static function isEnabled():bool {
 		return Factory::getSettingsGeneral()->isJBIntegrationEnabled() && self::isInstalled();
@@ -160,14 +163,25 @@ class JetBackupLinux {
 	 * @throws JetBackupLinuxException
 	 */
 	public static function checkRequirements():void {
+		// Check for blocking requirements first (these prevent further checks)
 		if(System::isWindowsOS()) throw new JetBackupLinuxException("This feature is not supported in Windows operating system");
 		if(!self::isOpenBaseDir()) throw new JetBackupLinuxException("'open_basedir' restriction is enabled, make sure " . dirname(Client::SOCKET_FILE) . " is available");
-		if(!Util::has_posix_getpwuid()) throw new JetBackupLinuxException("Required function 'posix_getpwuid' is disabled. Enable it to allow Socket API.");
-		if(!Util::has_posix_getgrgid()) throw new JetBackupLinuxException("Required function 'posix_getgrgid' is disabled. Enable it to allow Socket API.");
-		if(!Util::has_posix_geteuid()) throw new JetBackupLinuxException("Required function 'posix_geteuid' is disabled. Enable it to allow Socket API.");
+
+		// Collect all missing function errors at once for better user experience
+		$missingFunctions = [];
+		if(!Util::has_posix_getpwuid()) $missingFunctions[] = 'posix_getpwuid';
+		if(!Util::has_posix_getgrgid()) $missingFunctions[] = 'posix_getgrgid';
+		if(!Util::has_posix_geteuid()) $missingFunctions[] = 'posix_geteuid';
+		if(!function_exists('socket_connect')) $missingFunctions[] = 'socket_connect';
+
+		if(!empty($missingFunctions)) {
+			$functionList = implode(', ', $missingFunctions);
+			$plural = count($missingFunctions) > 1 ? 's' : '';
+			throw new JetBackupLinuxException("Required function{$plural} '{$functionList}' disabled or not installed. Enable to allow Socket API.");
+		}
 
 		if (!self::isSocket()) throw new JetBackupLinuxException("Cannot find JetBackup Linux socket");
-		if(!function_exists('socket_connect')) throw new JetBackupLinuxException("The function socket_connect not installed or disabled within your PHP.");
+
 		try {
 			$response = SocketAPI::api('getMyAccount')->execute();
 		} catch(SocketAPIException $e) {
@@ -307,12 +321,12 @@ class JetBackupLinux {
 	 * @throws JetBackupLinuxException
 	 * @throws SocketAPIException
 	 */
-	public static function listBackups(array $sort=[]):array {
-		
+	public static function listBackups(array $sort=[], int $limit=25, int $skip=0):array {
+
 		$query = Query::api('listBackupsWithItems')
 			->arg('type', self::BACKUP_TYPE_ACCOUNT)
 			->arg('structure', self::BACKUP_STRUCTURE_INCREMENTAL)
-			->limit(9999999);
+			->limit($limit, $skip);
 		
 		foreach($sort as $key => $direction) {
 			if($direction > 0) $query->sortAsc($key);

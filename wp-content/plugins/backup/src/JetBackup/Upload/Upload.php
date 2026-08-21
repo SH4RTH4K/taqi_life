@@ -63,7 +63,11 @@ class Upload extends DBObject {
 		$directory = Factory::getLocations()->getTempDir() . JetBackup::SEP . $this->getUniqueId();
 		if(!is_dir($directory)) mkdir($directory, 0700);
 		Util::secureFolder($directory);
-		return $directory . JetBackup::SEP . $this->getFilename();
+
+		$safeFilename = basename($this->getFilename());
+		if($safeFilename === '' || $safeFilename === '.' || $safeFilename === '..') throw new IOException("Invalid filename provided");
+
+		return $directory . JetBackup::SEP . $safeFilename;
 	}
 
 	/**

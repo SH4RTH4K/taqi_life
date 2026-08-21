@@ -333,7 +333,11 @@ class Store
 
     // save to access file with primary key value because we secured it above
     $storePath = $this->getDataPath() . "$data[$primaryKey].json";
-    IoHelper::writeContentToFile($storePath, json_encode($data));
+    $jsonData = json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($jsonData === false) {
+      throw new JsonException("Failed to encode document data to JSON: " . json_last_error_msg());
+    }
+    IoHelper::writeContentToFile($storePath, $jsonData);
 
     $this->createQueryBuilder()->getQuery()->getCache()->deleteAllWithNoLifetime();
 
@@ -386,7 +390,11 @@ class Store
     foreach ($data as $document) {
       // save to access file with primary key value because we secured it above
       $storePath = $this->getDataPath() . "$document[$primaryKey].json";
-      IoHelper::writeContentToFile($storePath, json_encode($document));
+      $jsonData = json_encode($document, JSON_INVALID_UTF8_SUBSTITUTE);
+      if ($jsonData === false) {
+        throw new JsonException("Failed to encode document data to JSON: " . json_last_error_msg());
+      }
+      IoHelper::writeContentToFile($storePath, $jsonData);
     }
 
     $this->createQueryBuilder()->getQuery()->getCache()->deleteAllWithNoLifetime();
@@ -440,7 +448,11 @@ class Store
     foreach ($updatable as $document) {
       // save to access file with primary key value because we secured it above
       $storePath = $this->getDataPath() . "$document[$primaryKey].json";
-      IoHelper::writeContentToFile($storePath, json_encode($document));
+      $jsonData = json_encode($document, JSON_INVALID_UTF8_SUBSTITUTE);
+      if ($jsonData === false) {
+        throw new JsonException("Failed to encode document data to JSON: " . json_last_error_msg());
+      }
+      IoHelper::writeContentToFile($storePath, $jsonData);
     }
 
     $this->createQueryBuilder()->getQuery()->getCache()->deleteAllWithNoLifetime();
@@ -824,9 +836,9 @@ class Store
     // Add the system ID with the store data array.
     $storeData[$primaryKey] = $id;
     // Prepare storable data
-    $storableJSON = @json_encode($storeData);
+    $storableJSON = @json_encode($storeData, JSON_INVALID_UTF8_SUBSTITUTE);
     if ($storableJSON === false) {
-      throw new JsonException('Unable to encode the data array, 
+      throw new JsonException('Unable to encode the data array,
         please provide a valid PHP associative array');
     }
     // Define the store path

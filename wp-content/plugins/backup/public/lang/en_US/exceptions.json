@@ -75,6 +75,7 @@
     "Added to queue!": "Added to queue!",
     "No upload file was provided": "No upload file was provided",
     "No upload file size was provided": "No upload file size was provided",
+    "Invalid filename: ": "Invalid filename: ",
     "Invalid upload id was provided": "Invalid upload id was provided",
     "Failed writing chunk to upload file. Error: %s": "Failed writing chunk to upload file. Error: %s",
     "Invalid backup file provided. Only .tar or .tar.gz files are allowed.": "Invalid backup file provided. Only .tar or .tar.gz files are allowed.",

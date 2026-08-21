@@ -32,5 +32,10 @@ abstract class Settings extends DBObject {
 		$this->set('_setting_id', $section);
 	}
 
+	public static function getChangedFields(array $current, array $original):array {
+		return array_keys(array_filter($current, function($value, $key) use ($original) {
+			return !array_key_exists($key, $original) || $original[$key] !== $value;
+		}, ARRAY_FILTER_USE_BOTH));
+	}
 
 }

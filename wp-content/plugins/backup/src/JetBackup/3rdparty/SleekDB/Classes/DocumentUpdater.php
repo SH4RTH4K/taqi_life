@@ -61,7 +61,11 @@ class DocumentUpdater
           NestedHelper::updateNestedValue($fieldName, $data, $value);
         }
       }
-      IoHelper::writeContentToFile($filePath, json_encode($data));
+      $jsonData = json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE);
+      if ($jsonData === false) {
+        throw new IOException("Failed to encode document data to JSON: " . json_last_error_msg());
+      }
+      IoHelper::writeContentToFile($filePath, $jsonData);
       $results[$key] = $data;
     }
     return ($returnUpdatedDocuments === true) ? $results : true;
@@ -143,7 +147,11 @@ class DocumentUpdater
         }
       }
       $filePath = $dataPath . $document[$primaryKey] . '.json';
-      IoHelper::writeContentToFile($filePath, json_encode($document));
+      $jsonData = json_encode($document, JSON_INVALID_UTF8_SUBSTITUTE);
+      if ($jsonData === false) {
+        throw new IOException("Failed to encode document data to JSON: " . json_last_error_msg());
+      }
+      IoHelper::writeContentToFile($filePath, $jsonData);
     }
     return $results;
   }

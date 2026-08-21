@@ -30,6 +30,7 @@ use JetBackup\Log\LogController;
 use JetBackup\Log\Logger;
 use JetBackup\Log\StdLogger;
 use JetBackup\Queue\Queue;
+use JetBackup\Queue\QueueItem;
 use JetBackup\Wordpress\Helper;
 use SleekDB\Exceptions\InvalidArgumentException;
 use WP_REST_Response;
@@ -43,6 +44,9 @@ class Cron {
 
 	private LogController $_logController;
 	private string $_data_dir;
+
+	/** @var QueueItem|null Current queue item being processed (for fatal error handling) */
+	private static ?QueueItem $_currentQueueItem = null;
 
 
 	/**
@@ -74,10 +78,48 @@ class Cron {
 	 * @throws QueueException|DBException|JBException
 	 */
 	public static function main() {
+		// Register shutdown handler to catch fatal errors (like max_execution_time)
+		register_shutdown_function([self::class, 'handleFatalError']);
+
 		CacheHandler::pre();
 		$cron = new Cron();
 		$cron->execute();
 		CacheHandler::post();
+	}
+
+	/**
+	 * Shutdown handler to catch fatal errors that cannot be caught with try/catch.
+	 * This ensures queue items are not left in a corrupted state when PHP dies.
+	 */
+	public static function handleFatalError(): void {
+		$error = error_get_last();
+
+		// Only handle fatal errors
+		if ($error === null || !in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE])) {
+			return;
+		}
+
+		$message = sprintf(
+			"[FATAL ERROR] %s in %s on line %d",
+			$error['message'],
+			$error['file'],
+			$error['line']
+		);
+
+		try {
+			$logFile = Factory::getLocations()->getLogsDir() . JetBackup::SEP . self::CRON_LOG_FILE;
+			FileLogger::emergency($logFile, $message);
+
+			// If we have a current queue item, log that it will be retried
+			if (self::$_currentQueueItem !== null) {
+				$itemId = self::$_currentQueueItem->getId();
+				if ($itemId) {
+					FileLogger::emergency($logFile, "Queue item {$itemId} will be retried on next cron run");
+				}
+			}
+		} catch (\Throwable $e) {
+			// Logging failed, ignore
+		}
 	}
 
 
@@ -116,8 +158,12 @@ class Cron {
 	private function _executeNextQueue():void {
 		if(!($item = Queue::next())) return;
 
-		$this->getLogController()->logMessage("Got next queue item");
+		// Track current item for fatal error handling
+		self::$_currentQueueItem = $item;
 
+		$this->getLogController()->logMessage("Got next queue item (ID: {$item->getId()}, Type: {$item->getType()})");
+
+		$task = null;
 		try {
 			switch ($item->getType()) {
 				case Queue::QUEUE_TYPE_BACKUP: $task = new Backup(); break;
@@ -131,15 +177,27 @@ class Cron {
 				case Queue::QUEUE_TYPE_RESTORE: $task = new PreRestore(); break;
 				default: throw new CronException('Could not find queue type');
 			}
-			
+
 			$task->setQueueItem($item);
 			$task->setCronLogController($this->getLogController());
 			if(Helper::isCLI()) $task->setExecutionTimeLimit(0);
 			$task->setExecutionTimeDie(true);
 			$task->execute();
+
+			// Clear current item on successful completion
+			self::$_currentQueueItem = null;
 		} catch (\Exception $e) {
 			$message = "Cron exited due to an uncaught " . get_class($e) . ". Error: " . $e->getMessage();
 			$this->_logController->logError($message);
+
+			// Also log to task's log controller (visible in GUI job log)
+			if ($task !== null) {
+				try {
+					$task->getLogController()->logError($message);
+				} catch (\Throwable $logError) {
+					// Ignore logging failures
+				}
+			}
 
 			$item->updateStatus(Queue::STATUS_NEVER_FINISHED);
 			$progress = $item->getProgress();
@@ -173,6 +231,9 @@ class Cron {
 					$this->_logController->logError("Failed to save Backup Job: " . $saveException->getMessage());
 				}
 			}
+
+			// Clear current item after exception handling
+			self::$_currentQueueItem = null;
 		}
 
 	}

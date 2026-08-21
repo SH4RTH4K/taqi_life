@@ -115,7 +115,7 @@ class Cache
       $cacheFile = $cachePath . $token . ".$lifetime.json";
     }
 
-    IoHelper::writeContentToFile($cacheFile, json_encode($content));
+    IoHelper::writeContentToFile($cacheFile, json_encode($content, JSON_INVALID_UTF8_SUBSTITUTE));
   }
 
   /**

@@ -44,9 +44,17 @@ class ListQueueItems extends ListRecord {
 		$list = $query->getQuery()->fetch();
 		
 		foreach($list as $item_details) {
-			$item = new QueueItem($item_details[JetBackup::ID_FIELD]);
-			if($this->isCLI()) $output[] = $item->getDisplayCLI();
-			else $output['items'][] = $item->getDisplay();
+			try {
+				$item = new QueueItem($item_details[JetBackup::ID_FIELD]);
+				if($this->isCLI()) $output[] = $item->getDisplayCLI();
+				else $output['items'][] = $item->getDisplay();
+			} catch (\Throwable $e) {
+				// Skip corrupted items but continue listing others
+				if(!$this->isCLI()) $output['items'][] = [
+					JetBackup::ID_FIELD => $item_details[JetBackup::ID_FIELD] ?? 'unknown',
+					'error' => 'Failed to load item: ' . $e->getMessage()
+				];
+			}
 		}
 		$this->setResponseData($output);
 	}

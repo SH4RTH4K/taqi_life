@@ -31,6 +31,7 @@ class General extends Settings {
 	const DISPLAY_LOCAL_FREE_DISK_SPACE = 'DISPLAY_LOCAL_FREE_DISK_SPACE';
 	const COMMUNITY_LANGUAGES = 'COMMUNITY_LANGUAGES';
 	const MANUAL_BACKUPS_RETENTION = 'MANUAL_BACKUPS_RETENTION';
+	const IMPORTED_BACKUPS_RETENTION = 'IMPORTED_BACKUPS_RETENTION';
 	const PHP_CLI_LOCATION = 'PHP_CLI_LOCATION';
 	const ALTERNATE_WP_CONFIG_LOCATION = 'ALTERNATE_WP_CONFIG_LOCATION';
 	const MYSQL_DEFAULT_PORT = 'MYSQL_DEFAULT_PORT';
@@ -74,13 +75,17 @@ class General extends Settings {
 	private function _getSocketApiStatus():bool {
 
 		if ($this->socketApiStatus === null) {
-			try {
-				JetBackupLinux::checkRequirements();
-				JetBackupLinux::getAccountInfo();
+			if ($this->isJBIntegrationEnabled()) {
 				$this->socketApiStatus = true;
-			} catch (\Exception $e) {
-				$this->socketApiErrMsg = $e->getMessage();
-				$this->socketApiStatus = false;
+			} else {
+				try {
+					JetBackupLinux::checkRequirements();
+					JetBackupLinux::getAccountInfo();
+					$this->socketApiStatus = true;
+				} catch (\Exception $e) {
+					$this->socketApiErrMsg = $e->getMessage();
+					$this->socketApiStatus = false;
+				}
 			}
 		}
 		return $this->socketApiStatus;
@@ -128,6 +133,18 @@ class General extends Settings {
 	public function setManualBackupsRetention(int $value):void { $this->set(self::MANUAL_BACKUPS_RETENTION, $value); }
 
 	/**
+	 * @return int
+	 */
+	public function getImportedBackupsRetention():int { return (int) $this->get(self::IMPORTED_BACKUPS_RETENTION, 10); }
+
+	/**
+	 * @param int $value
+	 *
+	 * @return void
+	 */
+	public function setImportedBackupsRetention(int $value):void { $this->set(self::IMPORTED_BACKUPS_RETENTION, $value); }
+
+	/**
 	 * @return string
 	 */
 	public function getPHPCLILocation():string { return $this->get(self::PHP_CLI_LOCATION, self::PHP_DEFAULT_BINARY); }
@@ -165,6 +182,7 @@ class General extends Settings {
 			self::ADMIN_TOP_MENU_INTEGRATION    => $this->isAdminTopMenuIntegrationEnabled() ? 1 : 0,
 			self::DISPLAY_LOCAL_FREE_DISK_SPACE    => $this->isDisplayLocalDiskSpaceEnabled() ? 1 : 0,
 			self::MANUAL_BACKUPS_RETENTION      => $this->getManualBackupsRetention(),
+			self::IMPORTED_BACKUPS_RETENTION    => $this->getImportedBackupsRetention(),
 			self::PHP_CLI_LOCATION              => $this->getPHPCLILocation(),
 			self::ALTERNATE_WP_CONFIG_LOCATION  => $this->getAlternateWpConfigLocation(),
 			self::MYSQL_DEFAULT_PORT            => $this->getMySQLDefaultPort(),
@@ -188,6 +206,7 @@ class General extends Settings {
 			'Admin bar top menu integration' => $this->isAdminTopMenuIntegrationEnabled() ? "Yes" : "No",
 			'Display Local Disk Space' => $this->isDisplayLocalDiskSpaceEnabled() ? "Yes" : "No",
 			'Manual Backup Retain'          => $this->getManualBackupsRetention(),
+			'Imported Backup Retain'        => $this->getImportedBackupsRetention(),
 			'PHP CLI Location'              => $this->getPHPCLILocation(),
 			'Alternate wp-config.php Location'  => $this->getAlternateWpConfigLocation(),
 			'MySQL Default Port'              => $this->getMysqlDefaultPort(),
@@ -201,7 +220,9 @@ class General extends Settings {
 	 */
 	public function validateFields():void {
 
-		if($this->getAlternateWpConfigLocation()) {
+		$changedFields = self::getChangedFields($this->getData(), (new General())->getData());
+
+		if(in_array(self::ALTERNATE_WP_CONFIG_LOCATION, $changedFields) && $this->getAlternateWpConfigLocation()) {
 
 			$alternateLocation = JetBackup::SEP. trim($this->getAlternateWpConfigLocation(), JetBackup::SEP);
 			$homedir = JetBackup::SEP . trim(Helper::getUserHomedir() ?? dirname(Wordpress::getAbsPath()), JetBackup::SEP) . JetBackup::SEP;
@@ -229,21 +250,25 @@ class General extends Settings {
 			} catch (Exception $e) {
 				throw new FieldsValidationException($e->getMessage());
 			}
-
-
 		}
 
-		if((!$this->getTimeZone() || $this->getTimeZone() != (self::DEFAULT_TIMEZONE || self::WORDPRESS_TIMEZONE)) && !isset(Util::generateTimeZoneList()[$this->getTimeZone()]))
-			throw new FieldsValidationException("Timezone " . $this->getTimeZone(). " is not valid");
+		if(in_array(self::TIMEZONE, $changedFields)) {
+            if (!$this->getTimeZone() || ($this->getTimeZone() != self::DEFAULT_TIMEZONE && $this->getTimeZone() != self::WORDPRESS_TIMEZONE && !isset(Util::generateTimeZoneList()[$this->getTimeZone()])))
+                throw new FieldsValidationException("Timezone " . $this->getTimeZone() . " is not valid");
+		}
 
-		if((!$this->getPHPCLILocation() || strtolower($this->getPHPCLILocation()) != self::PHP_DEFAULT_BINARY) && !is_executable(trim($this->getPHPCLILocation()))) 
-			throw new FieldsValidationException("PHP CLI location ".$this->getPHPCLILocation()." is not executable");
-		
-		if($this->isJBIntegrationEnabled()) {
-			try {
-				JetBackupLinux::checkRequirements();
-			} catch(JetBackupLinuxException $e) {
-				throw new FieldsValidationException($e->getMessage());
+		if(in_array(self::PHP_CLI_LOCATION, $changedFields)) {
+			if((!$this->getPHPCLILocation() || strtolower($this->getPHPCLILocation()) != self::PHP_DEFAULT_BINARY) && !is_executable(trim($this->getPHPCLILocation())))
+				throw new FieldsValidationException("PHP CLI location ".$this->getPHPCLILocation()." is not executable");
+		}
+
+		if(in_array(self::JETBACKUP_INTEGRATION, $changedFields)) {
+			if($this->isJBIntegrationEnabled()) {
+				try {
+					JetBackupLinux::checkRequirements();
+				} catch(JetBackupLinuxException $e) {
+					throw new FieldsValidationException($e->getMessage());
+				}
 			}
 		}
 	}

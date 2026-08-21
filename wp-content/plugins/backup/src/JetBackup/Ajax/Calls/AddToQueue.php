@@ -210,7 +210,11 @@ class AddToQueue extends aAjax {
 			$this->setResponseData($this->isCLI() ? $snap->getDisplayCLI() : $snap->getDisplay());
 			$this->setResponseMessage("Added to queue!");
 		} elseif($this->_snapshotPath()) {
-			Snapshot::addToRestoreQueueByPath($this->_snapshotPath(), $options, $excluded_files, $include_db, $exclude_db);
+			// Import the backup file and save it to the database for potential retry
+			$crossDomain = Factory::getSettingsRestore()->isRestoreAllowCrossDomain();
+			$snap = Snapshot::importFromPath($this->_snapshotPath(), $crossDomain);
+			$snap->addToRestoreQueue($options, $excluded_files, $included_files, $exclude_db, $include_db);
+			$this->setResponseData($this->isCLI() ? $snap->getDisplayCLI() : $snap->getDisplay());
 			$this->setResponseMessage("Added to queue!");
 		} elseif($this->_getFileName()) {
 
@@ -222,6 +226,12 @@ class AddToQueue extends aAjax {
 
 			if(!$this->_getFileUploadId()) {
 				if(!$this->_getFileSize()) throw new AjaxException("No upload file size was provided");
+
+				if(
+					$this->_getFileName() != basename($this->_getFileName()) ||
+					$this->_getFileName() == "." ||
+					$this->_getFileName() == ".."
+				) throw new AjaxException("Invalid filename: ". $this->_getFileName());
 
 				$upload->setFilename($this->_getFileName());
 				$upload->setSize($this->_getFileSize());
@@ -237,15 +247,21 @@ class AddToQueue extends aAjax {
 			} catch(IOException $e) {
 				throw new AjaxException("Failed writing chunk to upload file. Error: %s", [$e->getMessage()]);
 			}
-			
+
 			if($upload->isCompleted()) {
 
-				if (!( Archive::isTar($upload->getFileLocation()) || Archive::isGzCompressed($upload->getFileLocation()) ) ) {
-					Util::rm(dirname($upload->getFileLocation()));
+				$fileLocation = $upload->getFileLocation();
+
+				if (!( Archive::isTar($fileLocation) || Archive::isGzCompressed($fileLocation) ) ) {
+					Util::rm(dirname($fileLocation));
 					throw new AjaxException("Invalid backup file provided. Only .tar or .tar.gz files are allowed.");
 				}
 
-				Snapshot::addToRestoreQueueByPath($upload->getFileLocation());
+				// Import the backup file and save it to the database for potential retry
+				$crossDomain = Factory::getSettingsRestore()->isRestoreAllowCrossDomain();
+				$snap = Snapshot::importFromPath($fileLocation, $crossDomain);
+				$snap->addToRestoreQueue($options, $excluded_files, $included_files, $exclude_db, $include_db);
+				$this->setResponseData($this->isCLI() ? $snap->getDisplayCLI() : $snap->getDisplay());
 				$this->setResponseMessage("Added to queue!");
 			} else {
 				$this->setResponseMessage("Waiting for next file chunk");

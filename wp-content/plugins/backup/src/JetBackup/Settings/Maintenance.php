@@ -116,11 +116,24 @@ class Maintenance extends Settings {
 	 * @throws FieldsValidationException
 	 */
 	public function validateFields():void {
-		if($this->getQueueItemsTTL() < 0) throw new FieldsValidationException("Done Queue items TTL must be a positive integer or 0 to disable");
-		if($this->getDownloadItemsTTL() < 0) throw new FieldsValidationException("Download TTL must be a positive integer or 0 to disable");
-		if($this->getDownloadLimit() < 0) throw new FieldsValidationException("Download limit must be a positive integer or 0 to disable");
-		if($this->getAlertsTTL() < 0) throw new FieldsValidationException("System Alerts TTL must be a positive integer or 0 to disable");
-		if($this->getConfigExportRotate() < 1) throw new FieldsValidationException("Export Config Rotate Days must be grater then 0");
+
+		$changedFields = self::getChangedFields($this->getData(), (new Maintenance())->getData());
+
+		if(in_array(self::MAINTENANCE_QUEUE_HOURS_TTL, $changedFields)) {
+			if($this->getQueueItemsTTL() < 0) throw new FieldsValidationException("Done Queue items TTL must be a positive integer or 0 to disable");
+		}
+		if(in_array(self::MAINTENANCE_DOWNLOAD_ITEMS_TTL, $changedFields)) {
+			if($this->getDownloadItemsTTL() < 0) throw new FieldsValidationException("Download TTL must be a positive integer or 0 to disable");
+		}
+		if(in_array(self::MAINTENANCE_DOWNLOAD_LIMIT, $changedFields)) {
+			if($this->getDownloadLimit() < 0) throw new FieldsValidationException("Download limit must be a positive integer or 0 to disable");
+		}
+		if(in_array(self::MAINTENANCE_QUEUE_ALERTS_TTL, $changedFields)) {
+			if($this->getAlertsTTL() < 0) throw new FieldsValidationException("System Alerts TTL must be a positive integer or 0 to disable");
+		}
+		if(in_array(self::CONFIG_EXPORT_ROTATE, $changedFields)) {
+			if($this->getConfigExportRotate() < 1) throw new FieldsValidationException("Export Config Rotate Days must be grater then 0");
+		}
 	}
 
 	/**

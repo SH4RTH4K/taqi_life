@@ -60,7 +60,29 @@ class Ajax extends ArrayData {
 	 * @return void
 	 */
 	public static function main():void {
+		header('Content-Type: application/json');
+		register_shutdown_function([self::class, 'handleFatalError']);
 		(new Ajax())->execute();
+	}
+
+	/**
+	 * Shutdown handler to catch fatal errors and output proper JSON response
+	 */
+	public static function handleFatalError(): void {
+		$error = error_get_last();
+		if ($error === null || !in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE])) {
+			return;
+		}
+		// Clear any output that may have been sent
+		if (ob_get_level()) ob_end_clean();
+
+		$message = sprintf("Fatal error: %s in %s:%d", $error['message'], $error['file'], $error['line']);
+		die(json_encode([
+			'message' => $message,
+			'success' => 0,
+			'data' => [],
+			'system' => ['version' => JetBackup::VERSION],
+		]));
 	}
 
 	/**
@@ -70,7 +92,8 @@ class Ajax extends ArrayData {
 
 		if (Wordpress::isDebugModeEnabled()) {
 			error_reporting(E_ALL);
-			ini_set('display_errors', 1);
+			ini_set('log_errors', 1);
+			ini_set('display_errors', 0);
 		}
 
 		$data = $this->getData();
@@ -97,6 +120,8 @@ class Ajax extends ArrayData {
 			self::_exit($msg, $e->getData());
 		} catch(JBException $e) {
 			self::_exit($e->getMessage());
+		} catch(\Throwable $e) {
+			self::_exit("Unexpected error: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
 		}
 	}
 
@@ -104,12 +129,15 @@ class Ajax extends ArrayData {
 	 * @return void
 	 */
 	public static function heartbeat():void {
-		
+		header('Content-Type: application/json');
+		register_shutdown_function([self::class, 'handleFatalError']);
+
 		try {
 			self::_init();
 			Cron::main();
-		} catch( Exception $e) {
-			self::_exit($e->getMessage());
+		} catch(\Throwable $e) {
+			self::_exit($e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
+			return;
 		}
 
 		self::_output('Heartbeat Done');
@@ -124,7 +152,7 @@ class Ajax extends ArrayData {
 	 * @return void
 	 */
 	private static function _output(string $message, array $data=[], int $success=1):void {
-		die(json_encode([
+		$response = [
 			'message' => $message,
 			'success' => $success,
 			'data' => $data,
@@ -132,7 +160,21 @@ class Ajax extends ArrayData {
 				'version'   => JetBackup::VERSION,
 				'nonce'     => Wordpress::createNonce(),
 			],
-		]));
+		];
+
+		$json = json_encode($response, JSON_INVALID_UTF8_SUBSTITUTE);
+		if ($json === false) {
+			// Fallback if encoding fails - try without data
+			$json = json_encode([
+				'message' => 'JSON encoding failed: ' . json_last_error_msg(),
+				'success' => 0,
+				'data' => [],
+				'system' => ['version' => JetBackup::VERSION],
+			]);
+		}
+
+		while (ob_get_level() > 0 && @ob_end_clean());
+		die($json);
 	}
 
 	/**

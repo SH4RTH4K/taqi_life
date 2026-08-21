@@ -77,6 +77,8 @@ class BackupJob extends DBObject {
 	const BACKUP_ACCOUNT_CONTAINS_HOMEDIR = 1;
 	const BACKUP_ACCOUNT_CONTAINS_DATABASE = 2;
 	const BACKUP_ACCOUNT_CONTAINS_FULL = self::BACKUP_ACCOUNT_CONTAINS_HOMEDIR | self::BACKUP_ACCOUNT_CONTAINS_DATABASE;
+    // mask of ALL allowed bits
+    const BACKUP_ACCOUNT_CONTAINS_ALL = self::BACKUP_ACCOUNT_CONTAINS_HOMEDIR | self::BACKUP_ACCOUNT_CONTAINS_DATABASE;
 
 	const BACKUP_CONFIG_CONTAINS_CONFIG = 1;
 	const BACKUP_CONFIG_CONTAINS_DATABASE = 2;
@@ -85,6 +87,7 @@ class BackupJob extends DBObject {
 	const STRUCTURE_ARCHIVED    = 1;
 	const STRUCTURE_COMPRESSED  = 2;
 	const STRUCTURE_INCREMENTAL  = 3;
+    const STRUCTURE_DEDUPLICATION = 8;
 	
 	const DEFAULT_DATABASE_EXCLUDES = [
 		// Shield security
@@ -431,7 +434,9 @@ class BackupJob extends DBObject {
 		
 		return implode(", ", $name);
 	}
-
+    public function isValidBackupType(int $value): bool {
+        return $value > 0 && ($value & ~self::BACKUP_ACCOUNT_CONTAINS_ALL) === 0;
+    }
 	public function setHidden(bool $hidden) { $this->set(self::HIDDEN, $hidden); }
 	public function isHidden():bool { return !!$this->get(self::HIDDEN, false); }
 	
@@ -665,8 +670,8 @@ class BackupJob extends DBObject {
 		if(!$this->getType()) throw new FieldsValidationException("You must provide backup type");
 		if(!in_array($this->getType(), [self::TYPE_ACCOUNT,self::TYPE_CONFIG])) throw new FieldsValidationException("Invalid backup type provided");
 
-		if(!$this->getContains()) throw new FieldsValidationException("Backup has to contain at least files or database");
-
+        if (!$this->getContains()) throw new FieldsValidationException("Backup has to contain at least files or database");
+        if (!$this->isValidBackupType($this->getContains())) throw new FieldsValidationException("Invalid backup type");
 		if($this->getDestinations()) {
 			$destinations = [];
 			$is_local = 0;

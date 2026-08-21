@@ -47,18 +47,20 @@ class Schedule extends DBObject {
 	const TYPE_MONTHLY          = 4;
 	const TYPE_MANUALLY         = 5;
 	const TYPE_AFTER_JOB_DONE   = 6;
+	const TYPE_IMPORTED         = 7;
 
 	const DEFAULT_SCHEDULE_TYPES = [self::TYPE_HOURLY,self::TYPE_DAILY,self::TYPE_WEEKLY,self::TYPE_MONTHLY];
 	const DEFAULT_SCHEDULE_INTERVALS = [
 		self::TYPE_HOURLY        => 1,
 		self::TYPE_DAILY        => [1,2,3,4,5,6,7],
 		self::TYPE_WEEKLY       => 1,
-		self::TYPE_MONTHLY      => [1]
+		self::TYPE_MONTHLY      => 1
 	];
 
+   CONST ALLOWED_HOURLY_INTERVALS = [1,2,3,4,6,8,12];
 	const ALLOWED_INTERVALS = [
 		self::TYPE_DAILY        => [1,2,3,4,5,6,7],
-		self::TYPE_MONTHLY      => [1,7,14,21,28]
+		self::TYPE_MONTHLY      => [1,7,14,21,28],
 	];
 
 	const TYPE_NAMES = [
@@ -67,7 +69,8 @@ class Schedule extends DBObject {
 		self::TYPE_WEEKLY           => 'Weekly',
 		self::TYPE_MONTHLY          => 'Monthly',
 		self::TYPE_MANUALLY         => 'Manually',
-		self::TYPE_AFTER_JOB_DONE   => 'After Job Done'
+		self::TYPE_AFTER_JOB_DONE   => 'After Job Done',
+		self::TYPE_IMPORTED         => 'Imported'
 	];
 
 	const TYPE_ALLOWED = [
@@ -499,6 +502,16 @@ class Schedule extends DBObject {
 				);
 			}
 		}
+        if ($this->getType() == Schedule::TYPE_HOURLY) {
+            $interval = $this->getIntervals();
+            if (!in_array($interval, self::ALLOWED_HOURLY_INTERVALS, true)) {
+                throw new FieldsValidationException(
+                    "Schedule interval '{$interval}' is invalid for " .
+                    Schedule::TYPE_NAMES[Schedule::TYPE_HOURLY] .
+                    ". Allowed intervals: " .implode(',',self::ALLOWED_HOURLY_INTERVALS)
+                );
+            }
+        }
 
 
 		if ($this->getType() == Schedule::TYPE_AFTER_JOB_DONE) {

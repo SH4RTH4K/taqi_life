@@ -40,7 +40,20 @@ abstract class Task {
 		$this->_log_file_name = $log_file_name;
 		$this->_execution_start = time();
 		$this->_execution_memory = memory_get_usage();
-		$this->_execution_limit = Factory::getSettingsPerformance()->getExecutionTime();
+
+		$userSetting = Factory::getSettingsPerformance()->getExecutionTime();
+		if ($userSetting > 0) {
+			// User configured a custom execution time, use it
+			$this->_execution_limit = $userSetting;
+		} else {
+			// Auto-calculate from PHP's max_execution_time
+			$serverTime = System::getServerExecutionTime();
+			// If server has no limit (0 = CLI or unlimited), set to 0 (no limit)
+			// Note: getServerExecutionTime() returns 60 as fallback, check raw ini for unlimited
+			$rawTime = (int) ini_get('max_execution_time');
+			// Use server time - 10 as buffer, minimum 10 seconds for work
+			$this->_execution_limit = $rawTime > 0 ? max($serverTime - 10, 10) : 0;
+		}
 	}
 
 	/**
@@ -60,7 +73,13 @@ abstract class Task {
 
 	public function setExecutionTimeLimit(int $limit):void {
 		if(Factory::getSettingsPerformance()->getExecutionTime()) return;
-		$this->_execution_limit = ($limit ?? max(System::getServerExecutionTime() - 20, 40)); 
+		$serverTime = System::getServerExecutionTime();
+		// Ensure we never exceed PHP's actual max_execution_time
+		// Use server time - 10 as buffer, with a minimum of 10 seconds for work
+		$calculatedLimit = max($serverTime - 10, 10);
+		// If server has unlimited time (0), use the provided limit or default to 60
+		if($serverTime <= 0) $calculatedLimit = $limit ?: 60;
+		$this->_execution_limit = $calculatedLimit;
 	}
 
 	public function setExecutionTimeDie(bool $die):void {
@@ -163,6 +182,9 @@ abstract class Task {
 
 		$this->setLogController(new LogController());
 		$this->getLogController()->addLogger(new FileLogger($this->getLogFile(), $level));
+
+		// Log execution time settings at job start
+		$this->getLogController()->logMessage("Execution time limit: {$this->_execution_limit} seconds (PHP max_execution_time: " . ini_get('max_execution_time') . ")");
 		if(Cron::inDebug()) $this->getLogController()->addLogger(new StdLogger($level));
 	}
 	

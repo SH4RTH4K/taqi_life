@@ -32,6 +32,7 @@ use JetBackup\Queue\QueueItem;
 use JetBackup\Queue\QueueItemBackup;
 use JetBackup\Schedule\Schedule;
 use JetBackup\Snapshot\Snapshot;
+use JetBackup\Wordpress\Init;
 use JetBackup\Wordpress\Wordpress;
 use SleekDB\Exceptions\InvalidArgumentException;
 use SleekDB\Exceptions\IOException;
@@ -62,6 +63,18 @@ abstract class Backup {
 	public function getBackupJob(): BackupJob { return $this->_backup_job; }
 	public function getSnapshotDirectory(): string { return $this->getQueueItem()->getWorkspace() . JetBackup::SEP . $this->getQueueItemBackup()->getSnapshotName(); }
 
+	/**
+	 * Calculate optimal gzip chunk size based on execution time limit.
+	 * Smaller chunks allow more frequent execution time checks for graceful exit.
+	 */
+	protected function _getCompressionChunkSize(): int {
+		$limit = $this->getTask()->getExecutionTimeLimit();
+		if ($limit <= 0) return Gzip::DEFAULT_COMPRESS_CHUNK_SIZE; // No limit, use default 10MB
+		if ($limit <= 30) return 1048576;  // 1MB for ≤30s
+		if ($limit <= 60) return 2097152;  // 2MB for ≤60s
+		return Gzip::DEFAULT_COMPRESS_CHUNK_SIZE; // 10MB for higher limits
+	}
+
 	abstract public function execute():void;
 
 	protected function _archiveFiles($source): void {
@@ -87,7 +100,10 @@ abstract class Backup {
 				//$this->getLogController()->logDebug('[_archiveFiles] Data: ' . print_r($data, true));
 				$this->getLogController()->logDebug('[_archiveFiles] Source: ' .$source);
 
-				if (!$data->total_size) throw new ArchiveException('[_archiveFiles] Invalid total tree size');
+				if (!$data->total_size) {
+				$this->getLogController()->logMessage('[_archiveFiles] No files to archive (total_size=0). This may indicate all files are excluded or the source directory is empty.');
+				return; // Skip archiving if there are no files
+			}
 
 				$archive->setAppend(!($data->total_size == $data->current_pos));
 				
@@ -193,9 +209,14 @@ abstract class Backup {
 
 		$this->getLogController()->logMessage('Starting compression for: ' . $file_backup_archive);
 
+		// Use smaller chunk size when execution time is limited to allow graceful exit
+		// gzencode on large chunks can exceed the time buffer
+		$chunkSize = $this->_getCompressionChunkSize();
+		$this->getLogController()->logMessage("Compression chunk size: " . ($chunkSize / 1048576) . "MB (execution limit: {$this->getTask()->getExecutionTimeLimit()}s)");
+
 		Gzip::compress(
 			$file_backup_archive,
-			Gzip::DEFAULT_COMPRESS_CHUNK_SIZE,
+			$chunkSize,
 			Gzip::DEFAULT_COMPRESSION_LEVEL,
 			function($byteRead, $totalSize) {
 
@@ -242,6 +263,11 @@ abstract class Backup {
 		$snapshot->addParam(Snapshot::PARAM_MULTISITE, $multisite);
 		$snapshot->addParam(Snapshot::PARAM_SITE_URL, Wordpress::getSiteURL());
 		$snapshot->addParam(Snapshot::PARAM_DB_PREFIX, Wordpress::getDB()->getPrefix());
+
+		// Store whether this backup was created in a wp-content-only context (WP Cloud or setting enabled)
+		if (Init::isWpCloudAtomic() || Factory::getSettingsRestore()->isRestoreWpContentOnlyEnabled()) {
+			$snapshot->addParam(Snapshot::PARAM_WP_CONTENT_ONLY_BACKUP, true);
+		}
 
 		$size = 0;
 		$items = $this->getSnapshotItems();

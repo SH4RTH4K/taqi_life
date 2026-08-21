@@ -132,10 +132,12 @@ class ProductButton extends AbstractBlock {
 			 * Filters the change the quantity to add to cart.
 			 *
 			 * @since 8.5.0
+			 * @since 11.0.0 Added the `$variation_id` parameter.
 			 * @param number $default_quantity The default quantity.
 			 * @param number $product_id The product id.
+			 * @param number $variation_id     The variation ID. Always 0 in this context.
 			 */
-			$default_quantity = apply_filters( 'woocommerce_add_to_cart_quantity', $default_quantity, $product->get_id() );
+			$default_quantity = apply_filters( 'woocommerce_add_to_cart_quantity', $default_quantity, $product->get_id(), 0 );
 		}
 
 		$add_to_cart_text = null !== $product->add_to_cart_text() ? $product->add_to_cart_text() : __( 'Add to cart', 'woocommerce' );
@@ -146,8 +148,6 @@ class ProductButton extends AbstractBlock {
 
 		$context = array(
 			'quantityToAdd'    => $default_quantity,
-			'productId'        => $product->get_id(),
-			'productType'      => $product->get_type(),
 			'addToCartText'    => $add_to_cart_text,
 			'tempQuantity'     => $number_of_items_in_cart,
 			'animationStatus'  => 'IDLE',
@@ -169,6 +169,11 @@ class ProductButton extends AbstractBlock {
 				'href' => esc_url( $product->add_to_cart_url() ),
 				'rel'  => 'nofollow',
 			);
+
+			if ( $product->is_type( ProductType::EXTERNAL ) ) {
+				$attributes['target'] = '_blank';
+				$attributes['rel']    = 'nofollow noopener noreferrer';
+			}
 		}
 
 		wp_interactivity_config(
@@ -224,7 +229,6 @@ class ProductButton extends AbstractBlock {
 
 		$div_directives = '
 			data-wp-interactive="woocommerce/product-button"
-			data-wp-init="actions.refreshCartItems"
 		';
 
 		$context_directives = wp_interactivity_data_wp_context( $context );
@@ -287,7 +291,7 @@ class ProductButton extends AbstractBlock {
 				'{context_directives}'     => $context_directives,
 				'{button_styles}'          => esc_attr( $styles_and_classes['styles'] ),
 				'{attributes}'             => isset( $args['attributes'] ) ? wc_implode_html_attributes( $args['attributes'] ) : '',
-				'{add_to_cart_text}'       => $is_ajax_button ? '' : $add_to_cart_text,
+				'{add_to_cart_text}'       => $is_ajax_button ? '' : esc_html( $add_to_cart_text ),
 				'{div_directives}'         => $is_ajax_button ? $div_directives : '',
 				'{button_directives}'      => $is_ajax_button ? $button_directives : $anchor_directive,
 				'{span_button_directives}' => $is_ajax_button ? $span_button_directives : '',
@@ -340,6 +344,9 @@ class ProductButton extends AbstractBlock {
 	private function is_product_purchasable( $product ) {
 		if ( $product->is_type( ProductType::GROUPED ) ) {
 			$grouped_product_ids = $product->get_children();
+			if ( ! empty( $grouped_product_ids ) ) {
+				_prime_post_caches( $grouped_product_ids );
+			}
 			foreach ( $grouped_product_ids as $child ) {
 				$child_product = wc_get_product( $child );
 				if ( ! $child_product instanceof \WC_Product ) {

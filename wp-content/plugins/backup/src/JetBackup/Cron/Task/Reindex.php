@@ -13,7 +13,9 @@ use JetBackup\Destination\Integration\DestinationFile as DestinationFileAlias;
 use JetBackup\Entities\Util;
 use JetBackup\Exception\DBException;
 use JetBackup\Exception\DestinationException;
+use JetBackup\Exception\ExecutionTimeException;
 use JetBackup\Exception\IOException;
+use JetBackup\Exception\JBException;
 use JetBackup\Exception\JetBackupLinuxException;
 use JetBackup\Exception\ReindexException;
 use JetBackup\Exception\SnapshotMetaException;
@@ -26,6 +28,7 @@ use JetBackup\License\License;
 use JetBackup\Queue\Queue;
 use JetBackup\Queue\QueueItem;
 use JetBackup\Queue\QueueItemReindex;
+use JetBackup\ResumableTask\ResumableTask;
 use JetBackup\Snapshot\Snapshot;
 use JetBackup\Snapshot\SnapshotItem;
 use SleekDB\Exceptions\InvalidArgumentException;
@@ -352,20 +355,42 @@ class Reindex extends Task {
 	}
 
 	/**
-	 * @param $key
-	 * @param $backup
+	 * @param int $pageSize
+	 * @param int $skip
 	 *
-	 * @return void
-	 * @throws DBException
-	 * @throws InvalidArgumentException
-	 * @throws \SleekDB\Exceptions\IOException
-	 * @throws Exception
+	 * @return array
+	 * @throws JetBackupLinuxException
 	 */
+	public function _fetchJBBackupsPage(int $pageSize, int $skip):array {
+		$this->getLogController()->logDebug("[_fetchJBBackupsPage] Fetching backups (limit=$pageSize, skip=$skip)");
+		$this->getLogController()->logDebug("[_fetchJBBackupsPage] Memory before: " . Util::bytesToHumanReadable(memory_get_usage(true)));
+
+		$startTime = microtime(true);
+		$backups = JetBackupLinux::listBackups([], $pageSize, $skip);
+		$elapsed = round(microtime(true) - $startTime, 2);
+
+		$this->getLogController()->logDebug("[_fetchJBBackupsPage] Got " . count($backups) . " backups in {$elapsed}s");
+		$this->getLogController()->logDebug("[_fetchJBBackupsPage] Memory after: " . Util::bytesToHumanReadable(memory_get_usage(true)));
+		$this->getLogController()->logDebug("[_fetchJBBackupsPage] Response payload: " . Util::bytesToHumanReadable(strlen(serialize($backups))));
+
+		foreach($backups as $i => $backup) {
+			$this->getLogController()->logDebug("[_fetchJBBackupsPage] Backup[$i]: id=" . ($backup['_id'] ?? 'N/A')
+				. " created=" . ($backup['created'] ?? 'N/A')
+				. " structure=" . ($backup['backup_structure'] ?? 'N/A')
+				. " items=" . (isset($backup['items']) ? count($backup['items']) : 0)
+			);
+		}
+
+		return $backups;
+	}
+
 	public function _handleJBSnapshot($key, $backup) {
 		if(!$backup['items']) return;
 
-		if ($backup['backup_structure'] != JetBackupLinux::BACKUP_STRUCTURE_INCREMENTAL) {
-			$this->getLogController()->logError("[_handleJBSnapshot] Backup ID" . $backup['_id'] . " is not incremental, this type is not supported, skipping");
+		$this->getLogController()->logDebug("[_handleJBSnapshot] Processing backup " . $backup['_id'] . " (" . count($backup['items']) . " items)");
+
+		if ($backup['backup_structure'] != JetBackupLinux::BACKUP_STRUCTURE_INCREMENTAL && $backup['backup_structure'] != JetBackupLinux::BACKUP_STRUCTURE_DEDUPLICATION) {
+			$this->getLogController()->logError("[_handleJBSnapshot] Backup ID" . $backup['_id'] . " is not incremental or deduplication, this type is not supported, skipping");
 			return;
 		}
 
@@ -390,17 +415,23 @@ class Reindex extends Task {
 			$snapshot = new Snapshot();
 			$snapshot->setNotes($backup['notes']);
 		}
+        $structure = $backup['backup_structure'] == JetBackupLinux::BACKUP_STRUCTURE_INCREMENTAL
+            ? BackupJob::STRUCTURE_INCREMENTAL
+            : $backup['backup_structure'];
 
-		$snapshot->setEngine(Engine::ENGINE_JB);
+        $snapshot->setEngine(Engine::ENGINE_JB);
 		$snapshot->setBackupType(BackupJob::TYPE_ACCOUNT);
 		$snapshot->setUniqueId($backup['_id']);
 		$snapshot->setCreated(strtotime($backup['created']));
-		$snapshot->setStructure(BackupJob::STRUCTURE_INCREMENTAL);
+		$snapshot->setStructure($structure);
 		$snapshot->setName(sprintf(Snapshot::SNAPSHOT_NAME_PATTERN, Util::date('Y-m-d_His', strtotime($backup['created'])), $backup['_id']));
 
-		$items = [];
+		// Save snapshot early to get ID for items (reduces memory by saving items progressively)
+		$snapshot->save();
+
 		$size = 0;
 		$contains = 0;
+		$itemCount = 0;
 
 		foreach($backup['items'] as $item_details) {
 
@@ -412,6 +443,7 @@ class Reindex extends Task {
 			switch($item_details['backup_contains']) {
 				case JetBackupLinux::BACKUP_TYPE_ACCOUNT_HOMEDIR:
 					$item = new SnapshotItem();
+					$item->setParentId($snapshot->getId());
 					$item->setEngine(Engine::ENGINE_JB);
 					$item->setName($item_details['name']);
 					$item->setPath($item_details['path']);
@@ -419,9 +451,10 @@ class Reindex extends Task {
 					$item->setCreated(strtotime($item_details['created']));
 					$item->setBackupType(BackupJob::TYPE_ACCOUNT);
 					$item->setBackupContains(BackupJob::BACKUP_ACCOUNT_CONTAINS_HOMEDIR);
+					$item->save();
 					$size += intval($item_details['size']);
-					$items[] = $item;
 					$contains |= BackupJob::BACKUP_ACCOUNT_CONTAINS_HOMEDIR;
+					$itemCount++;
 				break;
 
 				case JetBackupLinux::BACKUP_TYPE_ACCOUNT_DATABASES:
@@ -429,6 +462,7 @@ class Reindex extends Task {
 					if($item_details['name'] != DB_NAME) continue 2;
 
 					$item = new SnapshotItem();
+					$item->setParentId($snapshot->getId());
 					$item->setEngine(Engine::ENGINE_JB);
 					$item->setName($item_details['name']);
 					$item->setPath($item_details['path']);
@@ -436,39 +470,34 @@ class Reindex extends Task {
 					$item->setCreated(strtotime($item_details['created']));
 					$item->setBackupType(BackupJob::TYPE_ACCOUNT);
 					$item->setBackupContains(BackupJob::BACKUP_ACCOUNT_CONTAINS_DATABASE);
+					$item->save();
 					$size += intval($item_details['size']);
-
-					$items[] = $item;
 					$contains |= BackupJob::BACKUP_ACCOUNT_CONTAINS_DATABASE;
+					$itemCount++;
 				break;
 			}
 		}
 
-		if(!$items) {
+		if($itemCount === 0) {
 			$snapshot->delete();
 			return;
 		}
 
 		if($contains != BackupJob::BACKUP_ACCOUNT_CONTAINS_FULL) {
 			$item = new SnapshotItem();
+			$item->setParentId($snapshot->getId());
 			$item->setEngine(Engine::ENGINE_JB);
 			$item->setBackupType(BackupJob::TYPE_ACCOUNT);
 			$item->setBackupContains(BackupJob::BACKUP_ACCOUNT_CONTAINS_FULL);
 			$item->setCreated(strtotime($backup['created']));
 			$item->setName('');
 			$item->setPath('');
+			$item->save();
 		}
-
-		$items[] = $item;
 
 		$snapshot->setContains($contains);
 		$snapshot->setSize($size);
 		$snapshot->save();
-		
-		foreach ($items as $item) {
-			$item->setParentId($snapshot->getId());
-			$item->save();
-		}
 	}
 
 
@@ -481,8 +510,10 @@ class Reindex extends Task {
 		$this->getLogController()->logMessage('Execution time: ' . $this->getExecutionTimeElapsed());
 		$this->getLogController()->logMessage('TTL time: ' . $this->getExecutionTimeLimit());
 
-		$this->getQueueItem()->updateStatus(Queue::STATUS_REINDEX_INDEXING_SNAPSHOTS);
-		$this->getQueueItem()->updateProgress('Indexing Snapshots');
+		if($this->getQueueItem()->getStatus() < Queue::STATUS_REINDEX_INDEXING_SNAPSHOTS) {
+			$this->getQueueItem()->updateStatus(Queue::STATUS_REINDEX_INDEXING_SNAPSHOTS);
+			$this->getQueueItem()->updateProgress('Indexing Snapshots');
+		}
 
 		if($this->_destination) {
 			
@@ -501,13 +532,53 @@ class Reindex extends Task {
 
 			});
 		} else {
-			
+
 			try {
-				$this->foreachCallable(['\JetBackup\JetBackupLinux\JetBackupLinux', 'listBackups'], [], [$this, '_handleJBSnapshot']);
+				$pageSize = 25;
+				$page = 0;
+				$totalProcessed = 0;
+
+				do {
+					// Check execution time before fetching next page
+					$this->checkExecutionTime();
+
+					$skip = $page * $pageSize;
+					$pageName = 'jb_backups_page_' . $page;
+
+					$this->foreachCallable(
+						[$this, '_fetchJBBackupsPage'],
+						[$pageSize, $skip],
+						[$this, '_handleJBSnapshot'],
+						$pageName
+					);
+
+					// Check how many items were in this page to determine if more pages exist
+					$resumable = $this->getQueueItem()->getResumableTask();
+					$item = $resumable->_getItem($pageName, ResumableTask::TYPE_FOREACH);
+					$data = $item->getData();
+					$pageCount = $data ? ($data['total'] ?? 0) : 0;
+					$totalProcessed += $pageCount;
+
+					// Update sub-progress for backup-level tracking within the reindex phase
+					$this->getQueueItem()->getProgress()->setCurrentSubItem($totalProcessed);
+					// Estimate total: if full page, assume at least one more page; otherwise this is the last page
+					$estimatedTotal = $pageCount >= $pageSize ? $totalProcessed + $pageSize : $totalProcessed;
+					$this->getQueueItem()->getProgress()->setTotalSubItems($estimatedTotal);
+					$this->getQueueItem()->getProgress()->setSubMessage("$totalProcessed backups processed");
+					$this->getQueueItem()->save();
+					$this->getLogController()->logMessage("[_reindexSnapshots] Page $page completed ($pageCount backups, $totalProcessed total)");
+
+					$page++;
+				} while($pageCount >= $pageSize);
 			} catch(JetBackupLinuxException $e) {
 				throw new ReindexException($e->getMessage());
+			} catch ( DBException|ExecutionTimeException|JBException|\SleekDB\Exceptions\IOException|InvalidArgumentException $e ) {
 			}
 		}
+
+		// Reset sub-progress after reindex phase completes
+		$this->getQueueItem()->getProgress()->resetSub();
+		$this->getQueueItem()->save();
 	}
 
 	/**
