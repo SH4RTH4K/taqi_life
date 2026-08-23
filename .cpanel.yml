@@ -1,0 +1,5 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/taqilife/public_html/taqi_life/
+    - /bin/rsync -a --exclude='.git/' --exclude='.cpanel.yml' --exclude='*.zip' --exclude='error_log' ./ "$DEPLOYPATH"
