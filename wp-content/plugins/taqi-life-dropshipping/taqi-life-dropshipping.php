@@ -1698,6 +1698,13 @@ final class TAQI_Life_Dropshipping {
         return reset( $categories );
     }
 
+    private function matches_supplier_category_filter( $product, $filter ) {
+        $filter = trim( (string) $filter );
+        if ( '' === $filter ) { return true; }
+        $category = $this->supplier_category( $product );
+        return false !== stripos( (string) $category['name'], $filter ) || false !== stripos( (string) $category['id'], $filter );
+    }
+
     private function category_choices() {
         $terms = get_terms( array(
             'taxonomy'   => 'taqi_category',
@@ -3654,6 +3661,7 @@ final class TAQI_Life_Dropshipping {
         $action = isset( $_POST['batch_action'] ) ? sanitize_key( wp_unslash( $_POST['batch_action'] ) ) : '';
         $import_category_id   = isset( $_POST['import_category_id'] ) ? absint( $_POST['import_category_id'] ) : 0;
         $import_category_path = isset( $_POST['import_category_path'] ) ? sanitize_text_field( wp_unslash( $_POST['import_category_path'] ) ) : '';
+        $supplier_category_filter = isset( $_POST['supplier_category_filter'] ) ? sanitize_text_field( wp_unslash( $_POST['supplier_category_filter'] ) ) : '';
         $page   = isset( $_POST['batch_page'] ) ? max( 1, absint( $_POST['batch_page'] ) ) : 1;
         $item   = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
         $total  = isset( $_POST['batch_total'] ) ? min( 50, max( 1, absint( $_POST['batch_total'] ) ) ) : 1;
@@ -3681,6 +3689,8 @@ final class TAQI_Life_Dropshipping {
         $errors     = array();
         $result     = null;
         if ( '' === $supplier_id ) {
+            ++$skipped;
+        } elseif ( ! $this->matches_supplier_category_filter( $product, $supplier_category_filter ) ) {
             ++$skipped;
         } elseif ( 'all_import' === $action ) {
                     $result = $this->import_product( $product, $page );
@@ -3724,6 +3734,7 @@ final class TAQI_Life_Dropshipping {
 
         $api_page = isset( $_GET['supplier_page'] ) ? max( 1, absint( $_GET['supplier_page'] ) ) : 1;
         $search   = isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '';
+        $category_filter = isset( $_GET['supplier_category'] ) ? sanitize_text_field( wp_unslash( $_GET['supplier_category'] ) ) : '';
         $data     = $this->api_request_products( $api_page );
         ?>
         <div class="wrap taqi-products-screen">
@@ -3804,17 +3815,23 @@ final class TAQI_Life_Dropshipping {
                     )
                 );
             }
+            if ( $category_filter ) {
+                $products = array_values( array_filter( $products, function ( $product ) use ( $category_filter ) {
+                    return $this->matches_supplier_category_filter( $product, $category_filter );
+                } ) );
+            }
             ?>
 
             <form method="get" class="taqi-toolbar">
                 <input type="hidden" name="page" value="taqi-dropshipping-products">
                 <input type="hidden" name="supplier_page" value="<?php echo esc_attr( $api_page ); ?>">
                 <input type="search" name="s" value="<?php echo esc_attr( $search ); ?>" placeholder="Search current API page by name/code/ID/category" style="min-width:340px;">
+                <input type="search" name="supplier_category" value="<?php echo esc_attr( $category_filter ); ?>" placeholder="Filter supplier category" style="min-width:220px;">
                 <button class="button">Search</button>
-                <?php if ( $search ) : ?><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=taqi-dropshipping-products&supplier_page=' . $api_page ) ); ?>">Clear</a><?php endif; ?>
+                <?php if ( $search || $category_filter ) : ?><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=taqi-dropshipping-products&supplier_page=' . $api_page ) ); ?>">Clear</a><?php endif; ?>
             </form>
 
-            <div class="taqi-summary"><span><strong>API page</strong> <?php echo esc_html( $api_page ); ?> / <?php echo esc_html( $last_page ); ?></span><span><strong>Products shown</strong> <?php echo esc_html( count( $products ) ); ?></span><?php if ( $search ) : ?><span><strong>Filter</strong> <?php echo esc_html( $search ); ?></span><?php endif; ?></div>
+            <div class="taqi-summary"><span><strong>API page</strong> <?php echo esc_html( $api_page ); ?> / <?php echo esc_html( $last_page ); ?></span><span><strong>Products shown</strong> <?php echo esc_html( count( $products ) ); ?></span><?php if ( $search ) : ?><span><strong>Search</strong> <?php echo esc_html( $search ); ?></span><?php endif; ?><?php if ( $category_filter ) : ?><span><strong>Supplier category</strong> <?php echo esc_html( $category_filter ); ?></span><?php endif; ?></div>
 
             <form method="post">
                 <?php wp_nonce_field( 'taqi_import_products_' . $api_page, 'taqi_import_nonce' ); ?>
@@ -3984,6 +4001,7 @@ final class TAQI_Life_Dropshipping {
                                     batch_total: String(total),
                                     import_category_id: (document.querySelector('[name="taqi_import_category_id"]') || {}).value || '0',
                                     import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
+                                    supplier_category_filter: (document.querySelector('[name="supplier_category"]') || {}).value || '',
                                     nonce: '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>'
                                 });
                                 const response = await fetch(ajaxurl, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
