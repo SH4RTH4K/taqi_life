@@ -1761,6 +1761,25 @@ final class TAQI_Life_Dropshipping {
         return $parent_id ?: new WP_Error( 'taqi_category_create_failed', 'Could not create the category path.' );
     }
 
+    private function apply_import_category_override( $product_id, $term_id = 0, $path = '' ) {
+        $term_id = absint( $term_id );
+        if ( '' !== trim( (string) $path ) ) {
+            $created = $this->ensure_category_path( $path );
+            if ( is_wp_error( $created ) ) {
+                return $created;
+            }
+            $term_id = absint( $created );
+        }
+        if ( ! $term_id || ! term_exists( $term_id, 'taqi_category' ) ) {
+            return true;
+        }
+        $ids = array( $term_id );
+        $this->add_term_with_ancestors( $ids, $term_id );
+        wp_set_object_terms( $product_id, array_values( array_unique( $ids ) ), 'taqi_category', false );
+        update_post_meta( $product_id, '_taqi_import_category_override', get_term_field( 'name', $term_id, 'taqi_category' ) );
+        return true;
+    }
+
     private function add_term_with_ancestors( &$ids, $term_id ) {
         $term_id = absint( $term_id );
         if ( ! $term_id || ! term_exists( $term_id, 'taqi_category' ) ) {
@@ -2292,7 +2311,7 @@ final class TAQI_Life_Dropshipping {
         return $product_id;
     }
 
-    private function import_product( $supplier_product, $api_page = 0 ) {
+    private function import_product( $supplier_product, $api_page = 0, $import_category_id = 0, $import_category_path = '' ) {
         $supplier_id = $this->supplier_product_id( $supplier_product );
         if ( '' === $supplier_id ) {
             return new WP_Error( 'taqi_missing_supplier_id', 'Supplier product does not contain a product ID.' );
@@ -2367,6 +2386,12 @@ final class TAQI_Life_Dropshipping {
 
         if ( is_wp_error( $product_id ) ) {
             return $product_id;
+        }
+
+        $category_override = $this->apply_import_category_override( $product_id, $import_category_id, $import_category_path );
+        if ( is_wp_error( $category_override ) ) {
+            wp_delete_post( $product_id, true );
+            return $category_override;
         }
 
         if ( $api_page > 0 ) {
@@ -3498,6 +3523,8 @@ final class TAQI_Life_Dropshipping {
 
         check_admin_referer( 'taqi_import_products_' . $api_page, 'taqi_import_nonce' );
         $action = sanitize_key( wp_unslash( $_POST['taqi_import_action'] ) );
+        $import_category_id   = isset( $_POST['taqi_import_category_id'] ) ? absint( $_POST['taqi_import_category_id'] ) : 0;
+        $import_category_path = isset( $_POST['taqi_import_category_path'] ) ? sanitize_text_field( wp_unslash( $_POST['taqi_import_category_path'] ) ) : '';
 
         if ( in_array( $action, array( 'all_import', 'all_resync', 'all_cancel' ), true ) ) {
             return $this->handle_all_product_pages( $action, $last_page );
@@ -3606,7 +3633,7 @@ final class TAQI_Life_Dropshipping {
                 continue;
             }
 
-            $result = $this->import_product( $product_map[ (string) $supplier_id ], $api_page );
+            $result = $this->import_product( $product_map[ (string) $supplier_id ], $api_page, $import_category_id, $import_category_path );
             if ( is_wp_error( $result ) ) {
                 $results[] = $result;
             } else {
@@ -3625,6 +3652,8 @@ final class TAQI_Life_Dropshipping {
         check_ajax_referer( 'taqi_all_pages_ajax', 'nonce' );
 
         $action = isset( $_POST['batch_action'] ) ? sanitize_key( wp_unslash( $_POST['batch_action'] ) ) : '';
+        $import_category_id   = isset( $_POST['import_category_id'] ) ? absint( $_POST['import_category_id'] ) : 0;
+        $import_category_path = isset( $_POST['import_category_path'] ) ? sanitize_text_field( wp_unslash( $_POST['import_category_path'] ) ) : '';
         $page   = isset( $_POST['batch_page'] ) ? max( 1, absint( $_POST['batch_page'] ) ) : 1;
         $item   = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
         $total  = isset( $_POST['batch_total'] ) ? min( 50, max( 1, absint( $_POST['batch_total'] ) ) ) : 1;
@@ -3649,11 +3678,12 @@ final class TAQI_Life_Dropshipping {
         $processed  = 0;
         $skipped    = 0;
         $failed     = 0;
+        $errors     = array();
         $result     = null;
         if ( '' === $supplier_id ) {
             ++$skipped;
         } elseif ( 'all_import' === $action ) {
-            $result = $this->import_product( $product, $page );
+                    $result = $this->import_product( $product, $page );
         } else {
             $linked = isset( $linked_map[ (string) $supplier_id ] ) ? $linked_map[ (string) $supplier_id ] : array();
             $product_id = isset( $linked['active'] ) ? absint( $linked['active'] ) : 0;
@@ -3667,6 +3697,7 @@ final class TAQI_Life_Dropshipping {
         }
         if ( null !== $result && is_wp_error( $result ) ) {
             ++$failed;
+            $errors[] = $supplier_id . ': ' . $result->get_error_message();
         } elseif ( null !== $result ) {
             ++$processed;
         }
@@ -3680,6 +3711,7 @@ final class TAQI_Life_Dropshipping {
                 'processed' => $processed,
                 'skipped'   => $skipped,
                 'failed'    => $failed,
+                'errors'    => $errors,
                 'done'      => $page >= $total,
             )
         );
@@ -3788,6 +3820,15 @@ final class TAQI_Life_Dropshipping {
                 <?php wp_nonce_field( 'taqi_import_products_' . $api_page, 'taqi_import_nonce' ); ?>
                 <input type="hidden" name="taqi_import_action" id="taqi_import_action" value="bulk">
                 <input type="hidden" name="single_supplier_id" id="single_supplier_id" value="">
+                <div class="taqi-import-bar">
+                    <label><strong>Import category:</strong>
+                        <select name="taqi_import_category_id" style="min-width:210px;">
+                            <option value="0">Use supplier/mapping category</option>
+                            <?php foreach ( $this->category_choices() as $term_id => $label ) : ?><option value="<?php echo esc_attr( $term_id ); ?>"><?php echo esc_html( $label ); ?></option><?php endforeach; ?>
+                        </select>
+                    </label>
+                    <input type="text" name="taqi_import_category_path" placeholder="Or create path: Electronics > Chargers" style="min-width:260px;">
+                </div>
                 <div class="taqi-import-bar"><button type="submit" class="button button-primary" onclick="document.getElementById('taqi_import_action').value='bulk';">Import Selected Page</button><button type="submit" class="button" data-bulk-action="bulk_resync">Re-sync Selected</button><button type="submit" class="button" data-bulk-action="bulk_cancel" data-confirm="Cancel synchronization for all selected linked products?">Cancel Selected</button><button type="submit" class="button button-primary" data-all-action="all_import">Import All <?php echo esc_html( $last_page ); ?> Pages</button><button type="submit" class="button" data-all-action="all_resync">Re-sync All <?php echo esc_html( $last_page ); ?> Pages</button><button type="submit" class="button" data-all-action="all_cancel" data-confirm="Cancel synchronization across all <?php echo esc_attr( $last_page ); ?> pages?">Cancel All <?php echo esc_html( $last_page ); ?> Pages</button><span class="description">Selected actions apply to this page. All-page actions run one supplier page at a time with progress.</span></div>
                 <div id="taqi-batch-progress" class="taqi-batch-progress" hidden><strong id="taqi-batch-label">Preparing batch…</strong><progress id="taqi-batch-bar" value="0" max="<?php echo esc_attr( $last_page ); ?>"></progress><span id="taqi-batch-detail"></span><button type="button" id="taqi-batch-cancel" class="button taqi-batch-cancel">Cancel Batch</button></div>
 
@@ -3925,7 +3966,7 @@ final class TAQI_Life_Dropshipping {
                             localStorage.removeItem(resumeKey);
                         }
                     }
-                    let processed = 0, skipped = 0, failed = 0;
+                    let processed = 0, skipped = 0, failed = 0, errors = [];
                     progress.hidden = false; bar.value = 0; label.textContent = 'Processing ' + btn.textContent.trim() + '…';
                     buttons.forEach(function (item) { item.disabled = true; });
                     cancelButton.disabled = false; cancelButton.hidden = false;
@@ -3941,6 +3982,8 @@ final class TAQI_Life_Dropshipping {
                                     batch_page: String(page),
                                     batch_item: String(item),
                                     batch_total: String(total),
+                                    import_category_id: (document.querySelector('[name="taqi_import_category_id"]') || {}).value || '0',
+                                    import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
                                     nonce: '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>'
                                 });
                                 const response = await fetch(ajaxurl, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
@@ -3948,8 +3991,10 @@ final class TAQI_Life_Dropshipping {
                                 if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Batch operation failed.');
                                 count = Number(result.data.count || 0);
                                 processed += Number(result.data.processed || 0); skipped += Number(result.data.skipped || 0); failed += Number(result.data.failed || 0);
+                                if (Array.isArray(result.data.errors)) errors = errors.concat(result.data.errors);
                                 bar.max = count || 1; bar.value = count ? item + 1 : 1;
                                 detail.textContent = 'Page ' + page + ' of ' + total + ' · product ' + Math.min(item + 1, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
+                                if (errors.length) detail.title = errors.join('\n');
                                 if (!count || item + 1 >= count) break;
                                 item++; localStorage.setItem(resumeKey, JSON.stringify({page: page, item: item}));
                             }
