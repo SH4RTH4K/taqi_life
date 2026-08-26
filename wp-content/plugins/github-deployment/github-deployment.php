@@ -11,6 +11,8 @@ defined( 'ABSPATH' ) || exit;
 final class TAQI_GitHub_Deployment {
     private const SETTINGS_OPTION = 'taqi_github_deployment_settings';
     private const STATUS_OPTION   = 'taqi_github_deployment_status';
+    private const REVIEW_OPTION   = 'taqi_github_deployment_review';
+    private const AUDIT_OPTION    = 'taqi_github_deployment_audit';
 
     public function __construct() {
         add_action( 'admin_menu', array( $this, 'admin_menu' ) );
@@ -25,7 +27,10 @@ final class TAQI_GitHub_Deployment {
             get_option( self::SETTINGS_OPTION, array() ),
             array(
                 'enabled'        => 'yes',
+                'visibility'     => 'public',
+                'protocol'       => 'https',
                 'repository_url' => 'https://github.com/SH4RTH4K/taqi_life.git',
+                'ssh_repository_url' => 'git@github.com:SH4RTH4K/taqi_life.git',
                 'branch'         => 'main',
                 'remote_name'    => 'origin',
             )
@@ -61,15 +66,23 @@ final class TAQI_GitHub_Deployment {
         return rtrim( strtolower( $url ), '.git' );
     }
 
+    private function valid_repository_url( $url, $protocol = 'https' ) {
+        if ( 'ssh' === $protocol ) {
+            return (bool) preg_match( '#^git@github\.com:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$#', trim( (string) $url ) );
+        }
+        return (bool) preg_match( '#^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$#', trim( (string) $url ) );
+    }
+
     private function status( $fetch = false ) {
         $settings = $this->settings();
-        $base = array( 'status' => 'Not configured', 'message' => 'Enable GitHub Deployment and save the repository settings.', 'local' => '', 'remote' => '', 'branch' => $settings['branch'], 'commits' => array(), 'changes' => array() );
+        $base = array( 'status' => 'Not configured', 'message' => 'Enable GitHub Deployment and save the repository settings.', 'local' => '', 'remote' => '', 'branch' => $settings['branch'], 'ahead' => 0, 'behind' => 0, 'commits' => array(), 'changes' => array() );
         if ( 'yes' !== $settings['enabled'] ) {
             return $base;
         }
-        if ( ! preg_match( '#^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$#', $settings['repository_url'] ) ) {
+        $configured_url = 'ssh' === $settings['protocol'] ? $settings['ssh_repository_url'] : $settings['repository_url'];
+        if ( ! $this->valid_repository_url( $configured_url, $settings['protocol'] ) ) {
             $base['status'] = 'Configuration error';
-            $base['message'] = 'Enter a valid public GitHub repository URL.';
+            $base['message'] = 'Enter a valid GitHub repository URL for the selected connection method.';
             return $base;
         }
         $inside = $this->git( array( 'rev-parse', '--is-inside-work-tree' ) );
@@ -79,7 +92,7 @@ final class TAQI_GitHub_Deployment {
             return $base;
         }
         $remote = $this->git( array( 'remote', 'get-url', $settings['remote_name'] ) );
-        if ( 0 !== $remote['code'] || $this->normalize_url( $remote['output'] ) !== $this->normalize_url( $settings['repository_url'] ) ) {
+        if ( 0 !== $remote['code'] || $this->normalize_url( $remote['output'] ) !== $this->normalize_url( $configured_url ) ) {
             $base['status'] = 'Repository mismatch';
             $base['message'] = 'The configured repository does not match the local remote.';
             return $base;
@@ -108,6 +121,8 @@ final class TAQI_GitHub_Deployment {
         $base['changes'] = array_values( array_filter( preg_split( '/\R/', trim( $changes['output'] ) ) ) );
         $ahead  = trim( $this->git( array( 'rev-list', '--count', 'HEAD..' . $remote_ref ) )['output'] );
         $behind = trim( $this->git( array( 'rev-list', '--count', $remote_ref . '..HEAD' ) )['output'] );
+        $base['ahead']  = absint( $ahead );
+        $base['behind'] = absint( $behind );
         $log = $this->git( array( 'log', '--format=%h%x1f%an%x1f%aI%x1f%s', 'HEAD..' . $remote_ref, '-n', '20' ) );
         foreach ( array_filter( preg_split( '/\R/', trim( $log['output'] ) ) ) as $line ) {
             $parts = explode( "\x1f", $line, 4 );
@@ -134,6 +149,49 @@ final class TAQI_GitHub_Deployment {
         return $base;
     }
 
+    private function review() {
+        return wp_parse_args( get_option( self::REVIEW_OPTION, array() ), array( 'commit' => '', 'comment' => '', 'reviewer' => '', 'reviewed_at' => '', 'approved_commit' => '', 'approved_by' => '', 'approved_at' => '' ) );
+    }
+
+    private function audit() {
+        $audit = get_option( self::AUDIT_OPTION, array() );
+        return is_array( $audit ) ? array_slice( $audit, 0, 20 ) : array();
+    }
+
+    private function add_audit( $event, $message, $commit = '' ) {
+        $audit = $this->audit();
+        array_unshift( $audit, array( 'event' => sanitize_key( $event ), 'message' => sanitize_text_field( $message ), 'commit' => sanitize_text_field( $commit ), 'user' => wp_get_current_user()->display_name, 'at' => current_time( 'mysql' ) ) );
+        update_option( self::AUDIT_OPTION, $audit, false );
+    }
+
+    private function deploy( $status, $review ) {
+        if ( 'Update available' !== $status['status'] || empty( $status['remote'] ) ) {
+            return new WP_Error( 'taqi_deploy_not_ready', 'Deployment is blocked: refresh status and confirm that an update is available.' );
+        }
+        if ( empty( $review['comment'] ) || $review['commit'] !== $status['remote'] || $review['approved_commit'] !== $status['remote'] ) {
+            return new WP_Error( 'taqi_deploy_not_approved', 'Deployment is blocked until this exact commit has a review comment and approval.' );
+        }
+
+        $uploads = wp_upload_dir();
+        $backup_dir = trailingslashit( $uploads['basedir'] ) . 'taqi-deployment-backups';
+        wp_mkdir_p( $backup_dir );
+        $backup = trailingslashit( $backup_dir ) . 'before-' . gmdate( 'Ymd-His' ) . '-' . substr( $status['local'], 0, 12 ) . '.zip';
+        $archive = $this->git( array( 'archive', '--format=zip', '-o', $backup, 'HEAD' ) );
+        if ( 0 !== $archive['code'] || ! file_exists( $backup ) ) {
+            return new WP_Error( 'taqi_backup_failed', 'Deployment blocked because the pre-deployment code backup could not be created.' );
+        }
+
+        $pulled = $this->git( array( 'pull', '--ff-only', $this->settings()['remote_name'], $this->settings()['branch'] ) );
+        if ( 0 !== $pulled['code'] ) {
+            return new WP_Error( 'taqi_deploy_failed', 'Deployment failed after backup: ' . $pulled['output'] );
+        }
+
+        $review['approved_commit'] = '';
+        update_option( self::REVIEW_OPTION, $review, false );
+        $this->add_audit( 'deploy', 'Deployed approved commit ' . substr( $status['remote'], 0, 12 ) . '. Backup: ' . basename( $backup ), $status['remote'] );
+        return array( 'message' => 'Deployment completed successfully. Backup created: ' . basename( $backup ) );
+    }
+
     public function page() {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
@@ -146,12 +204,15 @@ final class TAQI_GitHub_Deployment {
             $action = sanitize_key( wp_unslash( $_POST['github_deployment_action'] ) );
             if ( 'save' === $action ) {
                 $repository = esc_url_raw( trim( wp_unslash( $_POST['repository_url'] ?? '' ) ) );
+                $ssh_repository = sanitize_text_field( trim( wp_unslash( $_POST['ssh_repository_url'] ?? '' ) ) );
+                $visibility = in_array( sanitize_key( wp_unslash( $_POST['visibility'] ?? 'public' ) ), array( 'public', 'private' ), true ) ? sanitize_key( wp_unslash( $_POST['visibility'] ?? 'public' ) ) : 'public';
+                $protocol = in_array( sanitize_key( wp_unslash( $_POST['protocol'] ?? 'https' ) ), array( 'https', 'ssh' ), true ) ? sanitize_key( wp_unslash( $_POST['protocol'] ?? 'https' ) ) : 'https';
                 $branch = sanitize_text_field( trim( wp_unslash( $_POST['branch'] ?? 'main' ) ) );
                 $remote = sanitize_text_field( trim( wp_unslash( $_POST['remote_name'] ?? 'origin' ) ) );
-                if ( ! preg_match( '#^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$#', $repository ) || ! preg_match( '/^[A-Za-z0-9._-]{1,100}$/', $branch ) || ! preg_match( '/^[A-Za-z0-9._-]{1,50}$/', $remote ) ) {
-                    $error = 'Enter a valid public GitHub URL, branch, and remote name.';
+                if ( ! $this->valid_repository_url( $repository, 'https' ) || ! $this->valid_repository_url( $ssh_repository, 'ssh' ) || ! preg_match( '/^[A-Za-z0-9._-]{1,100}$/', $branch ) || ! preg_match( '/^[A-Za-z0-9._-]{1,50}$/', $remote ) ) {
+                    $error = 'Enter valid HTTPS and SSH repository URLs, branch, and remote name.';
                 } else {
-                    update_option( self::SETTINGS_OPTION, array( 'enabled' => ! empty( $_POST['enabled'] ) ? 'yes' : 'no', 'repository_url' => $repository, 'branch' => $branch, 'remote_name' => $remote ), false );
+                    update_option( self::SETTINGS_OPTION, array( 'enabled' => ! empty( $_POST['enabled'] ) ? 'yes' : 'no', 'visibility' => $visibility, 'protocol' => $protocol, 'repository_url' => $repository, 'ssh_repository_url' => $ssh_repository, 'branch' => $branch, 'remote_name' => $remote ), false );
                     $settings = $this->settings();
                     $message = 'GitHub Deployment settings saved.';
                 }
@@ -162,6 +223,39 @@ final class TAQI_GitHub_Deployment {
                 if ( in_array( $status['status'], array( 'Connection failed', 'Git unavailable', 'Repository mismatch', 'Configuration error', 'Branch not found' ), true ) ) {
                     $error = $status['message'];
                 }
+            } elseif ( 'review' === $action ) {
+                $status = $this->status();
+                $comment = sanitize_textarea_field( wp_unslash( $_POST['review_comment'] ?? '' ) );
+                if ( 'Update available' !== $status['status'] || empty( $status['remote'] ) || '' === $comment ) {
+                    $error = 'Add a review comment after checking GitHub for an available update.';
+                } else {
+                    update_option( self::REVIEW_OPTION, array( 'commit' => $status['remote'], 'comment' => $comment, 'reviewer' => wp_get_current_user()->display_name, 'reviewed_at' => current_time( 'mysql' ), 'approved_commit' => '', 'approved_by' => '', 'approved_at' => '' ), false );
+                    $this->add_audit( 'review', 'Review comment added for commit ' . substr( $status['remote'], 0, 12 ), $status['remote'] );
+                    $message = 'Review comment saved for this commit.';
+                }
+            } elseif ( 'approve' === $action ) {
+                $status = $this->status();
+                $review = $this->review();
+                if ( 'Update available' !== $status['status'] || empty( $review['comment'] ) || $review['commit'] !== $status['remote'] ) {
+                    $error = 'Approval is blocked until the current remote commit has a review comment.';
+                } else {
+                    $review['approved_commit'] = $status['remote'];
+                    $review['approved_by'] = wp_get_current_user()->display_name;
+                    $review['approved_at'] = current_time( 'mysql' );
+                    update_option( self::REVIEW_OPTION, $review, false );
+                    $this->add_audit( 'approve', 'Approved commit ' . substr( $status['remote'], 0, 12 ) . ' for deployment.', $status['remote'] );
+                    $message = 'Commit approved. It is ready for deployment.';
+                }
+            } elseif ( 'deploy' === $action ) {
+                $status = $this->status( true );
+                $review = $this->review();
+                $result = $this->deploy( $status, $review );
+                if ( is_wp_error( $result ) ) {
+                    $error = $result->get_error_message();
+                } else {
+                    $message = $result['message'];
+                    update_option( self::STATUS_OPTION, $this->status(), false );
+                }
             }
         }
         $settings = $this->settings();
@@ -170,6 +264,8 @@ final class TAQI_GitHub_Deployment {
             $status = $this->status();
         }
         $warning_statuses = array( 'Local changes detected', 'Diverged branch', 'Wrong local branch' );
+        $review = $this->review();
+        $audit  = $this->audit();
         ?>
         <div class="wrap taqi-github-deployment"><style>
         .taqi-github-deployment{max-width:1180px;padding-bottom:90px}.taqi-github-deployment .gdp-hero{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:24px 26px;margin:16px 0 20px;background:linear-gradient(135deg,#172033,#263d68);border-radius:12px;color:#fff;box-shadow:0 5px 16px #17203326}.taqi-github-deployment .gdp-hero-main{display:flex;align-items:center;gap:15px}.taqi-github-deployment .gdp-hero-mark{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border:1px solid #ffffff45;border-radius:12px;background:#ffffff14;font-size:25px;font-weight:700}.taqi-github-deployment .gdp-hero h1{margin:2px 0 5px;color:#fff;font-size:26px;line-height:1.15}.taqi-github-deployment .gdp-hero p{margin:0;color:#dbe6fa;font-size:13px}.taqi-github-deployment .gdp-eyebrow{color:#a9c8ff;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}.taqi-github-deployment .gdp-hero-status{flex:0 0 auto;text-align:right}.taqi-github-deployment .gdp-hero-status-label{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid #ffffff38;border-radius:999px;background:#ffffff12;color:#fff;font-size:12px;font-weight:600}.taqi-github-deployment .gdp-hero-status-label:before{content:"";width:7px;height:7px;border-radius:50%;background:#f4c44e}.taqi-github-deployment .gdp-hero-status-label.is-good:before{background:#5de092}.taqi-github-deployment .gdp-hero-status-label.is-error:before{background:#ff8b8b}.taqi-github-deployment .gdp-box{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:22px;margin:18px 0;box-shadow:0 2px 5px #0000000a}.taqi-github-deployment .gdp-box-header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;margin-bottom:18px}.taqi-github-deployment .gdp-box-header h2{margin:0 0 4px;font-size:18px}.taqi-github-deployment .gdp-box-header p{margin:0}.taqi-github-deployment .gdp-box-kicker{color:#646970;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em}.taqi-github-deployment .gdp-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}.taqi-github-deployment .gdp-field label{display:block;font-weight:600;font-size:12px;color:#3c434a}.taqi-github-deployment .gdp-field input:not([type=checkbox]){width:100%;box-sizing:border-box;margin-top:6px;min-height:36px}.taqi-github-deployment .gdp-field input[type=checkbox]{width:16px;height:16px;margin:0;vertical-align:middle}.taqi-github-deployment .gdp-field:first-child{display:flex;align-items:flex-end}.taqi-github-deployment .gdp-field:first-child label{display:flex;align-items:center;gap:8px;min-height:36px}.taqi-github-deployment .gdp-wide{grid-column:1/-1}.taqi-github-deployment .gdp-muted{color:#646970;font-size:12px}.taqi-github-deployment .gdp-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.taqi-github-deployment .gdp-actions .button{min-height:34px;padding:0 14px;line-height:32px;border-radius:6px}.taqi-github-deployment .gdp-status{padding:15px 17px;border-left:4px solid #2271b1;background:#f6f7f7;border-radius:0 7px 7px 0;margin:16px 0}.taqi-github-deployment .gdp-status strong{display:block;font-size:14px;margin-bottom:4px}.taqi-github-deployment .gdp-status p{margin:3px 0 0}.taqi-github-deployment .gdp-good{border-left-color:#008a20;background:#f0f8f2}.taqi-github-deployment .gdp-warn{border-left-color:#dba617;background:#fff8e5}.taqi-github-deployment .gdp-progress{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 18px}.taqi-github-deployment .gdp-progress-item{display:flex;align-items:center;gap:8px;color:#646970;font-size:11px;font-weight:600}.taqi-github-deployment .gdp-progress-item span{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#edf0f2;color:#646970}.taqi-github-deployment .gdp-progress-item.is-current span{background:#2271b1;color:#fff}.taqi-github-deployment .gdp-progress-item.is-current{color:#1d2327}.taqi-github-deployment .gdp-workflow{border:1px solid #dcdcde;border-radius:8px;overflow:hidden}.taqi-github-deployment .gdp-step{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:17px 16px;border-bottom:1px solid #e2e4e7}.taqi-github-deployment .gdp-step:last-child{border-bottom:0}.taqi-github-deployment .gdp-number{width:28px;height:28px;line-height:28px;text-align:center;border-radius:50%;background:#e5f0f7;color:#2271b1;font-weight:700}.taqi-github-deployment .gdp-step h3{margin:2px 0 5px;font-size:15px}.taqi-github-deployment .gdp-step p{margin:0}.taqi-github-deployment .gdp-commits{width:100%;border-collapse:collapse;margin-top:14px}.taqi-github-deployment .gdp-commits th,.taqi-github-deployment .gdp-commits td{padding:8px;text-align:left;border-bottom:1px solid #e2e4e7;font-size:12px}.taqi-github-deployment .gdp-note{padding:11px 13px;background:#fff8e5;color:#6b4e00;border-radius:6px;font-size:12px;line-height:1.5;margin-top:14px}@media(max-width:760px){.taqi-github-deployment .gdp-hero{align-items:flex-start;flex-direction:column}.taqi-github-deployment .gdp-hero-status{text-align:left}.taqi-github-deployment .gdp-grid{grid-template-columns:1fr}.taqi-github-deployment .gdp-wide{grid-column:auto}.taqi-github-deployment .gdp-progress{grid-template-columns:repeat(2,1fr);row-gap:10px}}
@@ -180,7 +276,9 @@ final class TAQI_GitHub_Deployment {
         <header class="gdp-hero"><div class="gdp-hero-main"><div class="gdp-hero-mark" aria-hidden="true">↗</div><div><div class="gdp-eyebrow">System / Release Control</div><h1>GitHub Deployment</h1><p>Review repository changes safely before they reach this application.</p></div></div><div class="gdp-hero-status"><span class="gdp-hero-status-label <?php echo 'Up to date' === $status['status'] ? 'is-good' : ( in_array( $status['status'], $warning_statuses, true ) ? 'is-error' : '' ); ?>"><?php echo esc_html( $status['status'] ); ?></span></div></header>
         <h1>GitHub Deployment</h1><p>Manage this application’s GitHub connection and review updates before deployment.</p>
         <?php if ( $message ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $message ); ?></p></div><?php endif; ?><?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
-        <div class="gdp-box"><h2 style="margin-top:0">GitHub Repository</h2><p class="gdp-muted">This plugin checks the repository and reviews commits. It never pushes local changes.</p><form method="post"><input type="hidden" name="github_deployment_action" value="save"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><div class="gdp-grid"><div class="gdp-field"><label><input type="checkbox" name="enabled" value="1" <?php checked( $settings['enabled'], 'yes' ); ?>> Enable GitHub Deployment</label></div><div class="gdp-field"><label>Branch<input name="branch" value="<?php echo esc_attr( $settings['branch'] ); ?>" required></label></div><div class="gdp-field"><label>Remote name<input name="remote_name" value="<?php echo esc_attr( $settings['remote_name'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>Repository URL<input type="url" name="repository_url" value="<?php echo esc_attr( $settings['repository_url'] ); ?>" required></label></div></div><div class="gdp-actions"><button class="button button-primary">Save Repository Settings</button><a class="button" href="<?php echo esc_url( $settings['repository_url'] ); ?>" target="_blank" rel="noopener noreferrer">Open GitHub Repository</a></div></form></div>
+        <div class="gdp-box"><h2 style="margin-top:0">Release Review and Deployment</h2><p class="gdp-muted">A deployment requires a review comment and approval for the exact commit currently on GitHub.</p><?php if ( $review['commit'] ) : ?><div class="gdp-status <?php echo $review['approved_commit'] === $review['commit'] ? 'gdp-good' : 'gdp-warn'; ?>"><strong><?php echo $review['approved_commit'] === $review['commit'] ? 'Approved for deployment' : 'Review recorded'; ?></strong><p><code><?php echo esc_html( substr( $review['commit'], 0, 12 ) ); ?></code> · <?php echo esc_html( $review['reviewer'] ); ?> · <?php echo esc_html( $review['reviewed_at'] ); ?></p><p><?php echo esc_html( $review['comment'] ); ?></p></div><?php endif; ?><form method="post"><input type="hidden" name="github_deployment_action" value="review"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><label><strong>Review comment</strong><textarea name="review_comment" rows="3" style="width:100%;margin-top:6px" required><?php echo esc_textarea( $review['comment'] ); ?></textarea></label><div class="gdp-actions"><button class="button button-primary">Save Review Comment</button></div></form><div class="gdp-actions"><form method="post"><input type="hidden" name="github_deployment_action" value="approve"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button" <?php disabled( empty( $review['comment'] ) || 'Update available' !== $status['status'] || $review['commit'] !== $status['remote'] ); ?>>Approve This Commit</button></form><form method="post"><input type="hidden" name="github_deployment_action" value="deploy"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary" <?php disabled( $review['approved_commit'] !== $status['remote'] || 'Update available' !== $status['status'] ); ?>>Deploy Approved Commit</button></form></div></div>
+        <?php if ( $audit ) : ?><div class="gdp-box"><h2 style="margin-top:0">Deployment Audit Trail</h2><table class="gdp-commits"><thead><tr><th>Event</th><th>Details</th><th>User</th><th>Date</th></tr></thead><tbody><?php foreach ( $audit as $entry ) : ?><tr><td><?php echo esc_html( ucfirst( $entry['event'] ) ); ?></td><td><?php echo esc_html( $entry['message'] ); ?><?php if ( ! empty( $entry['commit'] ) ) : ?> <code><?php echo esc_html( substr( $entry['commit'], 0, 12 ) ); ?></code><?php endif; ?></td><td><?php echo esc_html( $entry['user'] ); ?></td><td><?php echo esc_html( $entry['at'] ); ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?>
+        <div class="gdp-box"><h2 style="margin-top:0">GitHub Repository</h2><p class="gdp-muted">Configure public/private access and the connection method used by this WordPress server.</p><form method="post"><input type="hidden" name="github_deployment_action" value="save"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><div class="gdp-grid"><div class="gdp-field"><label><input type="checkbox" name="enabled" value="1" <?php checked( $settings['enabled'], 'yes' ); ?>> Enable GitHub Deployment</label></div><div class="gdp-field"><label>Repository visibility<select name="visibility" style="width:100%;margin-top:6px;min-height:36px"><option value="public" <?php selected( $settings['visibility'], 'public' ); ?>>Public</option><option value="private" <?php selected( $settings['visibility'], 'private' ); ?>>Private</option></select></label></div><div class="gdp-field"><label>Connection method<select name="protocol" style="width:100%;margin-top:6px;min-height:36px"><option value="https" <?php selected( $settings['protocol'], 'https' ); ?>>HTTPS</option><option value="ssh" <?php selected( $settings['protocol'], 'ssh' ); ?>>SSH</option></select></label></div><div class="gdp-field"><label>Branch<input name="branch" value="<?php echo esc_attr( $settings['branch'] ); ?>" required></label></div><div class="gdp-field"><label>Remote name<input name="remote_name" value="<?php echo esc_attr( $settings['remote_name'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>HTTPS repository URL<input type="url" name="repository_url" value="<?php echo esc_attr( $settings['repository_url'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>SSH repository URL<input type="text" name="ssh_repository_url" value="<?php echo esc_attr( $settings['ssh_repository_url'] ); ?>" required><span class="gdp-muted">Example: git@github.com:owner/repository.git. For private repositories, configure the server’s SSH deploy key in GitHub; never paste a private key here.</span></label></div></div><div class="gdp-actions"><button class="button button-primary">Save Repository Settings</button><a class="button" href="<?php echo esc_url( 'ssh' === $settings['protocol'] ? $settings['repository_url'] : $settings['repository_url'] ); ?>" target="_blank" rel="noopener noreferrer">Open GitHub Repository</a></div></form></div>
         <div class="gdp-box"><h2 style="margin-top:0">Safe Deployment Workflow</h2><p class="gdp-muted">Follow the numbered steps. Checking fetches remote metadata; application files are not changed by this page.</p><div class="gdp-status <?php echo 'Up to date' === $status['status'] ? 'gdp-good' : ( in_array( $status['status'], $warning_statuses, true ) ? 'gdp-warn' : '' ); ?>"><strong><?php echo esc_html( $status['status'] ); ?></strong><p><?php echo esc_html( $status['message'] ); ?></p><?php if ( $status['local'] || $status['remote'] ) : ?><p class="gdp-muted">Local: <code><?php echo esc_html( substr( $status['local'], 0, 12 ) ); ?></code> · GitHub: <code><?php echo esc_html( substr( $status['remote'], 0, 12 ) ); ?></code> · Branch: <?php echo esc_html( $status['branch'] ); ?></p><?php endif; ?></div><div class="gdp-workflow"><section class="gdp-step"><div class="gdp-number">1</div><div><h3>Verify repository connection</h3><p class="gdp-muted">Confirm the configured repository matches the local checkout.</p></div></section><section class="gdp-step"><div class="gdp-number">2</div><div><h3>Check GitHub for updates</h3><p class="gdp-muted">Fetch the configured branch and compare it with this local copy.</p><div class="gdp-actions"><form method="post"><input type="hidden" name="github_deployment_action" value="check"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary">Check for Updates</button></form></div></div></section><section class="gdp-step"><div class="gdp-number">3</div><div><h3>Review commits</h3><?php if ( ! empty( $status['commits'] ) ) : ?><table class="gdp-commits"><thead><tr><th>Commit</th><th>Subject</th><th>Author</th><th>Date</th></tr></thead><tbody><?php foreach ( $status['commits'] as $commit ) : ?><tr><td><code><?php echo esc_html( $commit['short'] ); ?></code></td><td><?php echo esc_html( $commit['subject'] ); ?></td><td><?php echo esc_html( $commit['author'] ); ?></td><td><?php echo esc_html( $commit['date'] ); ?></td></tr><?php endforeach; ?></tbody></table><?php else : ?><p class="gdp-muted">No new commits are waiting for review.</p><?php endif; ?></div></section><section class="gdp-step"><div class="gdp-number">4</div><div><h3>Deploy deliberately</h3><p class="gdp-muted">Review commits and back up the site before pulling an approved update. Automatic deployment is not enabled by this plugin.</p></div></section></div><div class="gdp-note"><strong>Safety:</strong> local tracked changes, a wrong branch, or diverged history are shown as blockers. Untracked uploads and runtime files are not removed.</div></div></div></div>
         <?php
     }
