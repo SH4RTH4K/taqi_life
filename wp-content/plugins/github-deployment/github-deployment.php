@@ -31,6 +31,7 @@ final class TAQI_GitHub_Deployment {
                 'protocol'       => 'https',
                 'repository_url' => 'https://github.com/SH4RTH4K/taqi_life.git',
                 'ssh_repository_url' => 'git@github.com:SH4RTH4K/taqi_life.git',
+                'ssh_key_path'   => '',
                 'branch'         => 'main',
                 'remote_name'    => 'origin',
             )
@@ -41,7 +42,13 @@ final class TAQI_GitHub_Deployment {
         if ( ! function_exists( 'exec' ) ) {
             return array( 'code' => 1, 'output' => 'PHP exec() is disabled on this server.' );
         }
+        $settings = $this->settings();
         $command = 'git';
+        if ( 'ssh' === $settings['protocol'] && $settings['ssh_key_path'] ) {
+            $key_path = trim( (string) $settings['ssh_key_path'] );
+            $ssh_command = 'ssh -i ' . escapeshellarg( $key_path ) . ' -o IdentitiesOnly=yes -o BatchMode=yes';
+            $command = 'Windows' === PHP_OS_FAMILY ? 'set GIT_SSH_COMMAND=' . escapeshellarg( $ssh_command ) . '&& git' : 'GIT_SSH_COMMAND=' . escapeshellarg( $ssh_command ) . ' git';
+        }
         foreach ( (array) $args as $arg ) {
             $command .= ' ' . escapeshellarg( (string) $arg );
         }
@@ -84,6 +91,19 @@ final class TAQI_GitHub_Deployment {
             $base['status'] = 'Configuration error';
             $base['message'] = 'Enter a valid GitHub repository URL for the selected connection method.';
             return $base;
+        }
+        if ( 'ssh' === $settings['protocol'] ) {
+            $key_path = trim( (string) $settings['ssh_key_path'] );
+            if ( '' === $key_path ) {
+                $base['status'] = 'SSH credential missing';
+                $base['message'] = 'SSH is selected, but no private-key path is configured.';
+                return $base;
+            }
+            if ( ! file_exists( $key_path ) || ! is_readable( $key_path ) ) {
+                $base['status'] = 'SSH credential unavailable';
+                $base['message'] = 'The configured SSH private key does not exist or is not readable by PHP.';
+                return $base;
+            }
         }
         $inside = $this->git( array( 'rev-parse', '--is-inside-work-tree' ) );
         if ( 0 !== $inside['code'] || 'true' !== trim( $inside['output'] ) ) {
@@ -205,14 +225,15 @@ final class TAQI_GitHub_Deployment {
             if ( 'save' === $action ) {
                 $repository = esc_url_raw( trim( wp_unslash( $_POST['repository_url'] ?? '' ) ) );
                 $ssh_repository = sanitize_text_field( trim( wp_unslash( $_POST['ssh_repository_url'] ?? '' ) ) );
+                $ssh_key_path = sanitize_text_field( trim( wp_unslash( $_POST['ssh_key_path'] ?? '' ) ) );
                 $visibility = in_array( sanitize_key( wp_unslash( $_POST['visibility'] ?? 'public' ) ), array( 'public', 'private' ), true ) ? sanitize_key( wp_unslash( $_POST['visibility'] ?? 'public' ) ) : 'public';
                 $protocol = in_array( sanitize_key( wp_unslash( $_POST['protocol'] ?? 'https' ) ), array( 'https', 'ssh' ), true ) ? sanitize_key( wp_unslash( $_POST['protocol'] ?? 'https' ) ) : 'https';
                 $branch = sanitize_text_field( trim( wp_unslash( $_POST['branch'] ?? 'main' ) ) );
                 $remote = sanitize_text_field( trim( wp_unslash( $_POST['remote_name'] ?? 'origin' ) ) );
-                if ( ! $this->valid_repository_url( $repository, 'https' ) || ! $this->valid_repository_url( $ssh_repository, 'ssh' ) || ! preg_match( '/^[A-Za-z0-9._-]{1,100}$/', $branch ) || ! preg_match( '/^[A-Za-z0-9._-]{1,50}$/', $remote ) ) {
-                    $error = 'Enter valid HTTPS and SSH repository URLs, branch, and remote name.';
+                if ( ! $this->valid_repository_url( $repository, 'https' ) || ! $this->valid_repository_url( $ssh_repository, 'ssh' ) || ! preg_match( '/^[A-Za-z0-9._-]{1,100}$/', $branch ) || ! preg_match( '/^[A-Za-z0-9._-]{1,50}$/', $remote ) || ( 'ssh' === $protocol && '' === $ssh_key_path ) ) {
+                    $error = 'Enter valid repository settings and an SSH private-key path when SSH is selected.';
                 } else {
-                    update_option( self::SETTINGS_OPTION, array( 'enabled' => ! empty( $_POST['enabled'] ) ? 'yes' : 'no', 'visibility' => $visibility, 'protocol' => $protocol, 'repository_url' => $repository, 'ssh_repository_url' => $ssh_repository, 'branch' => $branch, 'remote_name' => $remote ), false );
+                    update_option( self::SETTINGS_OPTION, array( 'enabled' => ! empty( $_POST['enabled'] ) ? 'yes' : 'no', 'visibility' => $visibility, 'protocol' => $protocol, 'repository_url' => $repository, 'ssh_repository_url' => $ssh_repository, 'ssh_key_path' => $ssh_key_path, 'branch' => $branch, 'remote_name' => $remote ), false );
                     $settings = $this->settings();
                     $message = 'GitHub Deployment settings saved.';
                 }
@@ -220,7 +241,7 @@ final class TAQI_GitHub_Deployment {
                 $status = $this->status( true );
                 update_option( self::STATUS_OPTION, $status, false );
                 $message = 'GitHub status refreshed.';
-                if ( in_array( $status['status'], array( 'Connection failed', 'Git unavailable', 'Repository mismatch', 'Configuration error', 'Branch not found' ), true ) ) {
+                if ( in_array( $status['status'], array( 'Connection failed', 'Git unavailable', 'Repository mismatch', 'Configuration error', 'Branch not found', 'SSH credential missing', 'SSH credential unavailable' ), true ) ) {
                     $error = $status['message'];
                 }
             } elseif ( 'review' === $action ) {
@@ -263,7 +284,7 @@ final class TAQI_GitHub_Deployment {
         if ( ! is_array( $status ) || empty( $status['status'] ) ) {
             $status = $this->status();
         }
-        $warning_statuses = array( 'Local changes detected', 'Diverged branch', 'Wrong local branch' );
+        $warning_statuses = array( 'Local changes detected', 'Diverged branch', 'Wrong local branch', 'SSH credential missing', 'SSH credential unavailable', 'Connection failed' );
         $review = $this->review();
         $audit  = $this->audit();
         ?>
@@ -278,7 +299,7 @@ final class TAQI_GitHub_Deployment {
         <?php if ( $message ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $message ); ?></p></div><?php endif; ?><?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
         <div class="gdp-box"><h2 style="margin-top:0">Release Review and Deployment</h2><p class="gdp-muted">A deployment requires a review comment and approval for the exact commit currently on GitHub.</p><?php if ( $review['commit'] ) : ?><div class="gdp-status <?php echo $review['approved_commit'] === $review['commit'] ? 'gdp-good' : 'gdp-warn'; ?>"><strong><?php echo $review['approved_commit'] === $review['commit'] ? 'Approved for deployment' : 'Review recorded'; ?></strong><p><code><?php echo esc_html( substr( $review['commit'], 0, 12 ) ); ?></code> · <?php echo esc_html( $review['reviewer'] ); ?> · <?php echo esc_html( $review['reviewed_at'] ); ?></p><p><?php echo esc_html( $review['comment'] ); ?></p></div><?php endif; ?><form method="post"><input type="hidden" name="github_deployment_action" value="review"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><label><strong>Review comment</strong><textarea name="review_comment" rows="3" style="width:100%;margin-top:6px" required><?php echo esc_textarea( $review['comment'] ); ?></textarea></label><div class="gdp-actions"><button class="button button-primary">Save Review Comment</button></div></form><div class="gdp-actions"><form method="post"><input type="hidden" name="github_deployment_action" value="approve"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button" <?php disabled( empty( $review['comment'] ) || 'Update available' !== $status['status'] || $review['commit'] !== $status['remote'] ); ?>>Approve This Commit</button></form><form method="post"><input type="hidden" name="github_deployment_action" value="deploy"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary" <?php disabled( $review['approved_commit'] !== $status['remote'] || 'Update available' !== $status['status'] ); ?>>Deploy Approved Commit</button></form></div></div>
         <?php if ( $audit ) : ?><div class="gdp-box"><h2 style="margin-top:0">Deployment Audit Trail</h2><table class="gdp-commits"><thead><tr><th>Event</th><th>Details</th><th>User</th><th>Date</th></tr></thead><tbody><?php foreach ( $audit as $entry ) : ?><tr><td><?php echo esc_html( ucfirst( $entry['event'] ) ); ?></td><td><?php echo esc_html( $entry['message'] ); ?><?php if ( ! empty( $entry['commit'] ) ) : ?> <code><?php echo esc_html( substr( $entry['commit'], 0, 12 ) ); ?></code><?php endif; ?></td><td><?php echo esc_html( $entry['user'] ); ?></td><td><?php echo esc_html( $entry['at'] ); ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?>
-        <div class="gdp-box"><h2 style="margin-top:0">GitHub Repository</h2><p class="gdp-muted">Configure public/private access and the connection method used by this WordPress server.</p><form method="post"><input type="hidden" name="github_deployment_action" value="save"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><div class="gdp-grid"><div class="gdp-field"><label><input type="checkbox" name="enabled" value="1" <?php checked( $settings['enabled'], 'yes' ); ?>> Enable GitHub Deployment</label></div><div class="gdp-field"><label>Repository visibility<select name="visibility" style="width:100%;margin-top:6px;min-height:36px"><option value="public" <?php selected( $settings['visibility'], 'public' ); ?>>Public</option><option value="private" <?php selected( $settings['visibility'], 'private' ); ?>>Private</option></select></label></div><div class="gdp-field"><label>Connection method<select name="protocol" style="width:100%;margin-top:6px;min-height:36px"><option value="https" <?php selected( $settings['protocol'], 'https' ); ?>>HTTPS</option><option value="ssh" <?php selected( $settings['protocol'], 'ssh' ); ?>>SSH</option></select></label></div><div class="gdp-field"><label>Branch<input name="branch" value="<?php echo esc_attr( $settings['branch'] ); ?>" required></label></div><div class="gdp-field"><label>Remote name<input name="remote_name" value="<?php echo esc_attr( $settings['remote_name'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>HTTPS repository URL<input type="url" name="repository_url" value="<?php echo esc_attr( $settings['repository_url'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>SSH repository URL<input type="text" name="ssh_repository_url" value="<?php echo esc_attr( $settings['ssh_repository_url'] ); ?>" required><span class="gdp-muted">Example: git@github.com:owner/repository.git. For private repositories, configure the server’s SSH deploy key in GitHub; never paste a private key here.</span></label></div></div><div class="gdp-actions"><button class="button button-primary">Save Repository Settings</button><a class="button" href="<?php echo esc_url( 'ssh' === $settings['protocol'] ? $settings['repository_url'] : $settings['repository_url'] ); ?>" target="_blank" rel="noopener noreferrer">Open GitHub Repository</a></div></form></div>
+        <div class="gdp-box"><h2 style="margin-top:0">GitHub Repository</h2><p class="gdp-muted">Configure public/private access and the connection method used by this WordPress server.</p><form method="post"><input type="hidden" name="github_deployment_action" value="save"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><div class="gdp-grid"><div class="gdp-field"><label><input type="checkbox" name="enabled" value="1" <?php checked( $settings['enabled'], 'yes' ); ?>> Enable GitHub Deployment</label></div><div class="gdp-field"><label>Repository visibility<select name="visibility" style="width:100%;margin-top:6px;min-height:36px"><option value="public" <?php selected( $settings['visibility'], 'public' ); ?>>Public</option><option value="private" <?php selected( $settings['visibility'], 'private' ); ?>>Private</option></select></label></div><div class="gdp-field"><label>Connection method<select name="protocol" style="width:100%;margin-top:6px;min-height:36px"><option value="https" <?php selected( $settings['protocol'], 'https' ); ?>>HTTPS</option><option value="ssh" <?php selected( $settings['protocol'], 'ssh' ); ?>>SSH</option></select></label></div><div class="gdp-field"><label>Branch<input name="branch" value="<?php echo esc_attr( $settings['branch'] ); ?>" required></label></div><div class="gdp-field"><label>Remote name<input name="remote_name" value="<?php echo esc_attr( $settings['remote_name'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>HTTPS repository URL<input type="url" name="repository_url" value="<?php echo esc_attr( $settings['repository_url'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>SSH repository URL<input type="text" name="ssh_repository_url" value="<?php echo esc_attr( $settings['ssh_repository_url'] ); ?>" required><span class="gdp-muted">Example: git@github.com:owner/repository.git.</span></label></div><div class="gdp-field gdp-wide"><label>SSH private-key path<input type="text" name="ssh_key_path" value="<?php echo esc_attr( $settings['ssh_key_path'] ); ?>" placeholder="/home/account/.ssh/github_deploy_key"><span class="gdp-muted">Required when SSH is selected. Enter the server path only; never paste the private key into WordPress. The key must be readable by the PHP/web-server user.</span></label></div></div><div class="gdp-actions"><button class="button button-primary">Save Repository Settings</button><a class="button" href="<?php echo esc_url( $settings['repository_url'] ); ?>" target="_blank" rel="noopener noreferrer">Open GitHub Repository</a></div></form></div>
         <div class="gdp-box"><h2 style="margin-top:0">Safe Deployment Workflow</h2><p class="gdp-muted">Follow the numbered steps. Checking fetches remote metadata; application files are not changed by this page.</p><div class="gdp-status <?php echo 'Up to date' === $status['status'] ? 'gdp-good' : ( in_array( $status['status'], $warning_statuses, true ) ? 'gdp-warn' : '' ); ?>"><strong><?php echo esc_html( $status['status'] ); ?></strong><p><?php echo esc_html( $status['message'] ); ?></p><?php if ( $status['local'] || $status['remote'] ) : ?><p class="gdp-muted">Local: <code><?php echo esc_html( substr( $status['local'], 0, 12 ) ); ?></code> · GitHub: <code><?php echo esc_html( substr( $status['remote'], 0, 12 ) ); ?></code> · Branch: <?php echo esc_html( $status['branch'] ); ?></p><?php endif; ?></div><div class="gdp-workflow"><section class="gdp-step"><div class="gdp-number">1</div><div><h3>Verify repository connection</h3><p class="gdp-muted">Confirm the configured repository matches the local checkout.</p></div></section><section class="gdp-step"><div class="gdp-number">2</div><div><h3>Check GitHub for updates</h3><p class="gdp-muted">Fetch the configured branch and compare it with this local copy.</p><div class="gdp-actions"><form method="post"><input type="hidden" name="github_deployment_action" value="check"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary">Check for Updates</button></form></div></div></section><section class="gdp-step"><div class="gdp-number">3</div><div><h3>Review commits</h3><?php if ( ! empty( $status['commits'] ) ) : ?><table class="gdp-commits"><thead><tr><th>Commit</th><th>Subject</th><th>Author</th><th>Date</th></tr></thead><tbody><?php foreach ( $status['commits'] as $commit ) : ?><tr><td><code><?php echo esc_html( $commit['short'] ); ?></code></td><td><?php echo esc_html( $commit['subject'] ); ?></td><td><?php echo esc_html( $commit['author'] ); ?></td><td><?php echo esc_html( $commit['date'] ); ?></td></tr><?php endforeach; ?></tbody></table><?php else : ?><p class="gdp-muted">No new commits are waiting for review.</p><?php endif; ?></div></section><section class="gdp-step"><div class="gdp-number">4</div><div><h3>Deploy deliberately</h3><p class="gdp-muted">Review commits and back up the site before pulling an approved update. Automatic deployment is not enabled by this plugin.</p></div></section></div><div class="gdp-note"><strong>Safety:</strong> local tracked changes, a wrong branch, or diverged history are shown as blockers. Untracked uploads and runtime files are not removed.</div></div></div></div>
         <?php
     }
