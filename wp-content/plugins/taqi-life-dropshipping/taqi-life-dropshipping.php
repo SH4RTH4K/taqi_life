@@ -22,13 +22,13 @@ final class TAQI_Life_Product {
             $post = get_post( $this->id );
             if ( $post ) {
                 $this->data = array( 'name' => $post->post_title, 'description' => $post->post_content, 'status' => $post->post_status, 'menu_order' => $post->menu_order );
-                $this->type = 'product_variation' === $post->post_type ? 'variation' : ( 'variable' === get_post_meta( $this->id, '_taqi_product_type', true ) ? 'variable' : 'simple' );
+                $this->type = 'taqi_product_variation' === $post->post_type ? 'variation' : ( 'variable' === get_post_meta( $this->id, '_taqi_product_type', true ) ? 'variable' : 'simple' );
             }
         }
     }
     public function get_id() { return $this->id; }
     public function get_name() { return isset( $this->data['name'] ) ? $this->data['name'] : ''; }
-    public function get_children() { return array_map( 'absint', get_posts( array( 'post_type' => 'product_variation', 'post_status' => 'any', 'post_parent' => $this->id, 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'menu_order', 'order' => 'ASC' ) ) ); }
+    public function get_children() { return array_map( 'absint', get_posts( array( 'post_type' => 'taqi_product_variation', 'post_status' => 'any', 'post_parent' => $this->id, 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'menu_order', 'order' => 'ASC' ) ) ); }
     public function is_type( $type ) { return $this->type === $type; }
     public function get_meta( $key, $single = true ) { return get_post_meta( $this->id, $key, $single ); }
     public function update_meta_data( $key, $value ) { $this->meta[ $key ] = $value; }
@@ -36,12 +36,12 @@ final class TAQI_Life_Product {
     public function set_name( $value ) { $this->data['name'] = sanitize_text_field( $value ); }
     public function set_description( $value ) { $this->data['description'] = $value; }
     public function set_status( $value ) { $this->data['status'] = $value; }
-    public function set_regular_price( $value ) { $this->update_meta_data( '_taqi_regular_price', $value ); $this->update_meta_data( '_regular_price', $value ); $this->update_meta_data( '_price', $value ); }
-    public function set_sale_price( $value ) { $this->update_meta_data( '_taqi_sale_price', $value ); $this->update_meta_data( '_sale_price', $value ); }
-    public function set_sku( $value ) { $value = sanitize_text_field( $value ); $this->update_meta_data( '_taqi_sku', $value ); $this->update_meta_data( '_sku', $value ); }
-    public function set_manage_stock( $value ) { $value = $value ? 'yes' : 'no'; $this->update_meta_data( '_taqi_manage_stock', $value ); $this->update_meta_data( '_manage_stock', $value ); }
-    public function set_stock_quantity( $value ) { $value = absint( $value ); $this->update_meta_data( '_taqi_stock_quantity', $value ); $this->update_meta_data( '_stock', $value ); }
-    public function set_stock_status( $value ) { $value = sanitize_key( $value ); $this->update_meta_data( '_taqi_stock_status', $value ); $this->update_meta_data( '_stock_status', $value ); }
+    public function set_regular_price( $value ) { $this->update_meta_data( '_taqi_regular_price', $value ); }
+    public function set_sale_price( $value ) { $this->update_meta_data( '_taqi_sale_price', $value ); }
+    public function set_sku( $value ) { $this->update_meta_data( '_taqi_sku', sanitize_text_field( $value ) ); }
+    public function set_manage_stock( $value ) { $this->update_meta_data( '_taqi_manage_stock', $value ? 'yes' : 'no' ); }
+    public function set_stock_quantity( $value ) { $this->update_meta_data( '_taqi_stock_quantity', absint( $value ) ); }
+    public function set_stock_status( $value ) { $this->update_meta_data( '_taqi_stock_status', sanitize_key( $value ) ); }
     public function set_category_ids( $ids ) { $this->data['category_ids'] = array_map( 'absint', (array) $ids ); }
     public function set_attributes( $attributes ) { $this->update_meta_data( '_taqi_attributes', wp_json_encode( $attributes ) ); }
     public function set_parent_id( $id ) { $this->data['parent_id'] = absint( $id ); }
@@ -51,9 +51,7 @@ final class TAQI_Life_Product {
     public function get_gallery_image_ids() { return array_map( 'absint', (array) get_post_meta( $this->id, '_taqi_gallery_image_ids', true ) ); }
     public function set_gallery_image_ids( $ids ) { $this->data['gallery_ids'] = array_map( 'absint', (array) $ids ); }
     public function save() {
-        // Store imported items as native WooCommerce products so they appear in
-        // Products > All Products and are handled by WooCommerce screens.
-        $post_type = 'variation' === $this->type ? 'product_variation' : 'product';
+        $post_type = 'variation' === $this->type ? 'taqi_product_variation' : 'taqi_product';
         $post = array( 'post_type' => $post_type, 'post_title' => isset( $this->data['name'] ) ? $this->data['name'] : 'Imported product', 'post_content' => isset( $this->data['description'] ) ? $this->data['description'] : '', 'post_status' => isset( $this->data['status'] ) ? $this->data['status'] : 'draft', 'post_parent' => isset( $this->data['parent_id'] ) ? $this->data['parent_id'] : 0, 'menu_order' => isset( $this->data['menu_order'] ) ? $this->data['menu_order'] : 0 );
         $post['ID'] = $this->id;
         $this->id = wp_insert_post( $post, true );
@@ -94,52 +92,15 @@ final class TAQI_Life_Dropshipping {
 
     private function __construct() {
         add_action( 'init', array( $this, 'register_content_types' ) );
-        add_action( 'admin_init', array( $this, 'migrate_legacy_products' ), 5 );
         add_action( 'admin_menu', array( $this, 'admin_menu' ) );
-        add_action( 'add_meta_boxes_product', array( $this, 'add_product_meta_box' ) );
+        add_action( 'add_meta_boxes_taqi_product', array( $this, 'add_product_meta_box' ) );
         add_action( 'wp_ajax_taqi_process_all_pages', array( $this, 'ajax_process_all_pages' ) );
     }
 
     public function register_content_types() {
-        register_taxonomy( 'taqi_category', array( 'product' ), array( 'label' => 'Dropshipping Categories', 'public' => false, 'show_ui' => true, 'hierarchical' => true, 'show_in_rest' => false ) );
+        register_taxonomy( 'taqi_category', array( 'taqi_product' ), array( 'label' => 'Dropshipping Categories', 'public' => false, 'show_ui' => true, 'hierarchical' => true, 'show_in_rest' => false ) );
         register_post_type( 'taqi_product', array( 'label' => 'Dropshipping Products', 'public' => false, 'show_ui' => true, 'show_in_menu' => false, 'supports' => array( 'title', 'editor', 'thumbnail' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
         register_post_type( 'taqi_product_variation', array( 'label' => 'Dropshipping Variations', 'public' => false, 'show_ui' => false, 'supports' => array( 'title' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
-    }
-
-    /** Convert records created by versions before native WooCommerce storage. */
-    public function migrate_legacy_products() {
-        if ( ! current_user_can( 'manage_options' ) || ! post_type_exists( 'product' ) || get_option( 'taqi_native_product_migration_v1' ) ) {
-            return;
-        }
-
-        $legacy_ids = get_posts( array( 'post_type' => array( 'taqi_product', 'taqi_product_variation' ), 'post_status' => 'any', 'posts_per_page' => -1, 'fields' => 'ids' ) );
-        foreach ( $legacy_ids as $legacy_id ) {
-            $legacy_type = get_post_type( $legacy_id );
-            wp_update_post( array( 'ID' => $legacy_id, 'post_type' => 'taqi_product_variation' === $legacy_type ? 'product_variation' : 'product' ) );
-
-            // Preserve the old importer fields while exposing the values WooCommerce reads.
-            $meta_map = array(
-                '_taqi_regular_price' => '_regular_price',
-                '_taqi_sale_price'    => '_sale_price',
-                '_taqi_sku'           => '_sku',
-                '_taqi_manage_stock'  => '_manage_stock',
-                '_taqi_stock_quantity'=> '_stock',
-                '_taqi_stock_status'  => '_stock_status',
-            );
-            foreach ( $meta_map as $source => $target ) {
-                $value = get_post_meta( $legacy_id, $source, true );
-                if ( '' !== (string) $value && '' === (string) get_post_meta( $legacy_id, $target, true ) ) {
-                    update_post_meta( $legacy_id, $target, $value );
-                }
-            }
-            $regular = get_post_meta( $legacy_id, '_regular_price', true );
-            $sale    = get_post_meta( $legacy_id, '_sale_price', true );
-            if ( '' !== (string) $regular && '' === (string) get_post_meta( $legacy_id, '_price', true ) ) {
-                update_post_meta( $legacy_id, '_price', '' !== (string) $sale ? $sale : $regular );
-            }
-        }
-
-        update_option( 'taqi_native_product_migration_v1', 1, false );
     }
 
     public function admin_menu() {
@@ -381,7 +342,7 @@ final class TAQI_Life_Dropshipping {
         $map = array();
         $ids = get_posts(
             array(
-                'post_type'      => 'product',
+                'post_type'      => 'taqi_product',
                 'post_status'    => array( 'publish', 'draft', 'pending', 'private', 'trash' ),
                 'fields'         => 'ids',
                 'posts_per_page' => -1,
@@ -954,7 +915,7 @@ final class TAQI_Life_Dropshipping {
 
     private function sku_owner( $sku ) {
         if ( '' === (string) $sku ) { return 0; }
-        $ids = get_posts( array( 'post_type' => array( 'product', 'product_variation' ), 'post_status' => 'any', 'fields' => 'ids', 'posts_per_page' => 1, 'meta_query' => array( array( 'key' => '_taqi_sku', 'value' => (string) $sku ) ) ) );
+        $ids = get_posts( array( 'post_type' => array( 'taqi_product', 'taqi_product_variation' ), 'post_status' => 'any', 'fields' => 'ids', 'posts_per_page' => 1, 'meta_query' => array( array( 'key' => '_taqi_sku', 'value' => (string) $sku ) ) ) );
         return empty( $ids ) ? 0 : absint( $ids[0] );
     }
 
@@ -979,7 +940,7 @@ final class TAQI_Life_Dropshipping {
 
         return get_posts(
             array(
-                'post_type'      => 'product',
+                'post_type'      => 'taqi_product',
                 'post_status'    => $statuses,
                 'fields'         => 'ids',
                 'posts_per_page' => 20,
@@ -1025,7 +986,7 @@ final class TAQI_Life_Dropshipping {
 
     private function validate_linked_product( $product_id, $supplier_id, $allow_cancelled = true ) {
         $product_id = absint( $product_id );
-        if ( ! $product_id || 'product' !== get_post_type( $product_id ) ) {
+        if ( ! $product_id || 'taqi_product' !== get_post_type( $product_id ) ) {
             return new WP_Error( 'taqi_invalid_product', 'The dropshipping product could not be found.' );
         }
 
@@ -2377,7 +2338,7 @@ final class TAQI_Life_Dropshipping {
 
         $import_marker_key = 'taqi_imported_' . md5( $this->supplier_key() . '|' . $supplier_id );
         $marked_product_id = absint( get_transient( $import_marker_key ) );
-        if ( $marked_product_id && 'product' === get_post_type( $marked_product_id ) ) {
+        if ( $marked_product_id && 'taqi_product' === get_post_type( $marked_product_id ) ) {
             return array(
                 'status'      => 'duplicate',
                 'product_id'  => $marked_product_id,
@@ -2482,7 +2443,7 @@ final class TAQI_Life_Dropshipping {
     private function workflow_state() {
         $settings  = $this->settings();
         $last_test = get_option( self::OPTION_LAST_TEST, array() );
-        $counts    = wp_count_posts( 'product' );
+        $counts    = wp_count_posts( 'taqi_product' );
         return array(
             'settings'       => $settings,
             'last_test'      => $last_test,
@@ -4472,7 +4433,7 @@ final class TAQI_Life_Dropshipping {
             $updated = 0;
             if ( $status && $ids ) {
                 foreach ( array_unique( array_filter( $ids ) ) as $product_id ) {
-                    if ( current_user_can( 'edit_post', $product_id ) && 'product' === get_post_type( $product_id ) ) {
+                    if ( current_user_can( 'edit_post', $product_id ) && 'taqi_product' === get_post_type( $product_id ) ) {
                         wp_update_post( array( 'ID' => $product_id, 'post_status' => $status ) );
                         ++$updated;
                     }
@@ -4545,7 +4506,7 @@ final class TAQI_Life_Dropshipping {
         $supplier_category_choices = array();
         $category_product_ids = get_posts(
             array(
-                'post_type'      => 'product',
+                'post_type'      => 'taqi_product',
                 'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
                 'posts_per_page' => -1,
                 'fields'         => 'ids',
@@ -4567,7 +4528,7 @@ final class TAQI_Life_Dropshipping {
         }
         $query = new WP_Query(
             array(
-                'post_type'      => 'product',
+                'post_type'      => 'taqi_product',
                 'post_status'    => array( 'publish', 'draft', 'pending', 'private' ),
                 'posts_per_page' => 50,
                 'paged'          => $imported_page,
@@ -4600,7 +4561,7 @@ final class TAQI_Life_Dropshipping {
                 .taqi-imported-screen .taqi-status-pagination .current{background:#2271b1;border-color:#2271b1;color:#fff}
             </style>
             <h1>Imported Products</h1>
-            <p>Products linked to <?php echo esc_html( $this->settings()['supplier_name'] ); ?> through TAQI LIFE Dropshipping.</p>
+                <p>Products linked to <?php echo esc_html( $this->settings()['supplier_name'] ); ?> through TAQI LIFE Dropshipping.</p>
 
             <div class="notice notice-info inline taqi-sync-note">
                 <p><strong>Safe sync behavior:</strong> Re-sync refreshes supplier price, sale price, stock, mapped categories and supplier metadata. Your local product title, description and downloaded images are preserved; missing supplier images are added when safely detected. <strong>Cancel Sync</strong> keeps the WooCommerce product but stops synchronization. <strong>Delete</strong> permanently deletes only the local WooCommerce product; it never deletes anything from the supplier API.</p>
@@ -4645,7 +4606,7 @@ final class TAQI_Life_Dropshipping {
                         <th>Supplier ID</th>
                         <th>Supplier Code</th>
                         <th>Supplier Category</th>
-                        <th>Woo Status</th>
+                        <th>Dropshipping Status</th>
                         <th>Sync Status</th>
                         <th>Last Sync</th>
                         <th>Price</th>
@@ -4672,7 +4633,7 @@ final class TAQI_Life_Dropshipping {
                         <tr>
                             <th class="check-column"><input type="checkbox" class="taqi-imported-check" name="product_ids[]" value="<?php echo esc_attr( $product_id ); ?>"></th>
                             <td class="taqi-imported-sl"><?php echo esc_html( ( ( $imported_page - 1 ) * 50 ) + $query->current_post + 1 ); ?></td>
-                            <td><strong><?php echo esc_html( get_the_title() ); ?></strong><br><small>Woo ID: <?php echo esc_html( $product_id ); ?></small></td>
+                            <td><strong><?php echo esc_html( get_the_title() ); ?></strong><br><small>Product ID: <?php echo esc_html( $product_id ); ?></small></td>
                             <td><?php echo esc_html( $product_type ); ?></td>
                             <td><?php echo esc_html( $supplier_id ? $supplier_id : '—' ); ?></td>
                             <td><?php echo esc_html( get_post_meta( $product_id, '_taqi_supplier_code', true ) ); ?></td>
@@ -4864,7 +4825,7 @@ final class TAQI_Life_Dropshipping {
     }
 
     public function add_product_meta_box( $post ) {
-        if ( ! $post || 'product' !== $post->post_type ) {
+        if ( ! $post || 'taqi_product' !== $post->post_type ) {
             return;
         }
         if ( ! get_post_meta( $post->ID, '_taqi_supplier', true ) ) {
