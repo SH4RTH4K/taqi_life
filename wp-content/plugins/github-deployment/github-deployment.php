@@ -212,6 +212,31 @@ final class TAQI_GitHub_Deployment {
         return array( 'message' => 'Deployment completed successfully. Backup created: ' . basename( $backup ) );
     }
 
+    private function quick_sync( $status ) {
+        if ( empty( $status['remote'] ) || in_array( $status['status'], array( 'Wrong local branch', 'Diverged branch', 'Repository mismatch', 'Configuration error', 'Git unavailable', 'Connection failed', 'Branch not found', 'SSH credential missing', 'SSH credential unavailable' ), true ) ) {
+            return new WP_Error( 'taqi_sync_not_ready', 'Update cannot start until the repository and branch connection is valid.' );
+        }
+
+        $uploads = wp_upload_dir();
+        $backup_dir = trailingslashit( $uploads['basedir'] ) . 'taqi-deployment-backups';
+        wp_mkdir_p( $backup_dir );
+        $backup = trailingslashit( $backup_dir ) . 'before-sync-' . gmdate( 'Ymd-His' ) . '-' . substr( $status['local'], 0, 12 ) . '.zip';
+        $archive = $this->git( array( 'archive', '--format=zip', '-o', $backup, 'HEAD' ) );
+        if ( 0 !== $archive['code'] || ! file_exists( $backup ) ) {
+            return new WP_Error( 'taqi_backup_failed', 'Update blocked because the pre-update code backup could not be created.' );
+        }
+
+        $remote_ref = $this->settings()['remote_name'] . '/' . $this->settings()['branch'];
+        $synced = $this->git( array( 'reset', '--hard', $remote_ref ) );
+        if ( 0 !== $synced['code'] ) {
+            return new WP_Error( 'taqi_sync_failed', 'cPanel update failed after backup: ' . $synced['output'] );
+        }
+
+        update_option( self::REVIEW_OPTION, array( 'commit' => '', 'comment' => '', 'reviewer' => '', 'reviewed_at' => '', 'approved_commit' => '', 'approved_by' => '', 'approved_at' => '' ), false );
+        $this->add_audit( 'sync', 'Updated cPanel directly to GitHub commit ' . substr( $status['remote'], 0, 12 ) . '. Local tracked changes were replaced. Backup: ' . basename( $backup ), $status['remote'] );
+        return array( 'message' => 'cPanel updated from GitHub. Backup created: ' . basename( $backup ) );
+    }
+
     public function page() {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
@@ -277,6 +302,15 @@ final class TAQI_GitHub_Deployment {
                     $message = $result['message'];
                     update_option( self::STATUS_OPTION, $this->status(), false );
                 }
+            } elseif ( 'sync' === $action ) {
+                $status = $this->status( true );
+                $result = $this->quick_sync( $status );
+                if ( is_wp_error( $result ) ) {
+                    $error = $result->get_error_message();
+                } else {
+                    $message = $result['message'];
+                    update_option( self::STATUS_OPTION, $this->status(), false );
+                }
             }
         }
         $settings = $this->settings();
@@ -297,6 +331,7 @@ final class TAQI_GitHub_Deployment {
         <header class="gdp-hero"><div class="gdp-hero-main"><div class="gdp-hero-mark" aria-hidden="true">↗</div><div><div class="gdp-eyebrow">System / Release Control</div><h1>GitHub Deployment</h1><p>Review repository changes safely before they reach this application.</p></div></div><div class="gdp-hero-status"><span class="gdp-hero-status-label <?php echo 'Up to date' === $status['status'] ? 'is-good' : ( in_array( $status['status'], $warning_statuses, true ) ? 'is-error' : '' ); ?>"><?php echo esc_html( $status['status'] ); ?></span></div></header>
         <h1>GitHub Deployment</h1><p>Manage this application’s GitHub connection and review updates before deployment.</p>
         <?php if ( $message ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $message ); ?></p></div><?php endif; ?><?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
+        <div class="gdp-box"><h2 style="margin-top:0">Quick cPanel Update</h2><p class="gdp-muted">Use this when the desired commit is already on GitHub. It creates a code backup, then synchronizes tracked WordPress files directly from the configured branch.</p><form method="post" onsubmit="return confirm('Update cPanel from GitHub now? Tracked local code changes will be replaced. Untracked uploads and runtime files will be preserved.');"><input type="hidden" name="github_deployment_action" value="sync"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary" <?php disabled( empty( $status['remote'] ) || in_array( $status['status'], array( 'Wrong local branch', 'Diverged branch', 'Repository mismatch', 'Configuration error', 'Git unavailable', 'Connection failed', 'Branch not found', 'SSH credential missing', 'SSH credential unavailable' ), true ) ); ?>>Update cPanel from GitHub</button><span class="gdp-muted" style="margin-left:10px">Review comment and approval are not required for this direct update.</span></form></div>
         <div class="gdp-box"><h2 style="margin-top:0">Release Review and Deployment</h2><p class="gdp-muted">A deployment requires a review comment and approval for the exact commit currently on GitHub.</p><?php if ( $review['commit'] ) : ?><div class="gdp-status <?php echo $review['approved_commit'] === $review['commit'] ? 'gdp-good' : 'gdp-warn'; ?>"><strong><?php echo $review['approved_commit'] === $review['commit'] ? 'Approved for deployment' : 'Review recorded'; ?></strong><p><code><?php echo esc_html( substr( $review['commit'], 0, 12 ) ); ?></code> · <?php echo esc_html( $review['reviewer'] ); ?> · <?php echo esc_html( $review['reviewed_at'] ); ?></p><p><?php echo esc_html( $review['comment'] ); ?></p></div><?php endif; ?><form method="post"><input type="hidden" name="github_deployment_action" value="review"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><label><strong>Review comment</strong><textarea name="review_comment" rows="3" style="width:100%;margin-top:6px" required><?php echo esc_textarea( $review['comment'] ); ?></textarea></label><div class="gdp-actions"><button class="button button-primary">Save Review Comment</button></div></form><div class="gdp-actions"><form method="post"><input type="hidden" name="github_deployment_action" value="approve"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button" <?php disabled( empty( $review['comment'] ) || 'Update available' !== $status['status'] || $review['commit'] !== $status['remote'] ); ?>>Approve This Commit</button></form><form method="post"><input type="hidden" name="github_deployment_action" value="deploy"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><button class="button button-primary" <?php disabled( $review['approved_commit'] !== $status['remote'] || 'Update available' !== $status['status'] ); ?>>Deploy Approved Commit</button></form></div></div>
         <?php if ( $audit ) : ?><div class="gdp-box"><h2 style="margin-top:0">Deployment Audit Trail</h2><table class="gdp-commits"><thead><tr><th>Event</th><th>Details</th><th>User</th><th>Date</th></tr></thead><tbody><?php foreach ( $audit as $entry ) : ?><tr><td><?php echo esc_html( ucfirst( $entry['event'] ) ); ?></td><td><?php echo esc_html( $entry['message'] ); ?><?php if ( ! empty( $entry['commit'] ) ) : ?> <code><?php echo esc_html( substr( $entry['commit'], 0, 12 ) ); ?></code><?php endif; ?></td><td><?php echo esc_html( $entry['user'] ); ?></td><td><?php echo esc_html( $entry['at'] ); ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?>
         <div class="gdp-box"><h2 style="margin-top:0">GitHub Repository</h2><p class="gdp-muted">Configure public/private access and the connection method used by this WordPress server.</p><form method="post"><input type="hidden" name="github_deployment_action" value="save"><?php wp_nonce_field( 'github_deployment_action', 'github_deployment_nonce' ); ?><div class="gdp-grid"><div class="gdp-field"><label><input type="checkbox" name="enabled" value="1" <?php checked( $settings['enabled'], 'yes' ); ?>> Enable GitHub Deployment</label></div><div class="gdp-field"><label>Repository visibility<select name="visibility" style="width:100%;margin-top:6px;min-height:36px"><option value="public" <?php selected( $settings['visibility'], 'public' ); ?>>Public</option><option value="private" <?php selected( $settings['visibility'], 'private' ); ?>>Private</option></select></label></div><div class="gdp-field"><label>Connection method<select name="protocol" style="width:100%;margin-top:6px;min-height:36px"><option value="https" <?php selected( $settings['protocol'], 'https' ); ?>>HTTPS</option><option value="ssh" <?php selected( $settings['protocol'], 'ssh' ); ?>>SSH</option></select></label></div><div class="gdp-field"><label>Branch<input name="branch" value="<?php echo esc_attr( $settings['branch'] ); ?>" required></label></div><div class="gdp-field"><label>Remote name<input name="remote_name" value="<?php echo esc_attr( $settings['remote_name'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>HTTPS repository URL<input type="url" name="repository_url" value="<?php echo esc_attr( $settings['repository_url'] ); ?>" required></label></div><div class="gdp-field gdp-wide"><label>SSH repository URL<input type="text" name="ssh_repository_url" value="<?php echo esc_attr( $settings['ssh_repository_url'] ); ?>" required><span class="gdp-muted">Example: git@github.com:owner/repository.git.</span></label></div><div class="gdp-field gdp-wide"><label>SSH private-key path<input type="text" name="ssh_key_path" value="<?php echo esc_attr( $settings['ssh_key_path'] ); ?>" placeholder="/home/account/.ssh/github_deploy_key"><span class="gdp-muted">Required when SSH is selected. Enter the server path only; never paste the private key into WordPress. The key must be readable by the PHP/web-server user.</span></label></div></div><div class="gdp-actions"><button class="button button-primary">Save Repository Settings</button><a class="button" href="<?php echo esc_url( $settings['repository_url'] ); ?>" target="_blank" rel="noopener noreferrer">Open GitHub Repository</a></div></form></div>
