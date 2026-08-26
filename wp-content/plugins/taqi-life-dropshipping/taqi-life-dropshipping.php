@@ -3900,7 +3900,10 @@ final class TAQI_Life_Dropshipping {
         set_time_limit( 120 );
         $data = $this->api_request_products( $page, $supplier_category_filter );
         if ( is_wp_error( $data ) ) {
-            wp_send_json_error( array( 'message' => 'Page ' . $page . ': ' . $data->get_error_message() ) );
+            // A supplier page can fail independently. Return a successful batch
+            // response so the browser advances to the next page and reports the
+            // failure in the final summary instead of aborting the whole batch.
+            wp_send_json_success( array( 'page' => $page, 'item' => $item, 'count' => 0, 'total' => $total, 'processed' => 0, 'skipped' => 0, 'failed' => 1, 'errors' => array( 'Page ' . $page . ': ' . $data->get_error_message() ), 'total_pages' => $total, 'page_done' => true, 'done' => $page >= $total ) );
         }
 
         $products = $this->extract_products( $data );
@@ -4410,7 +4413,7 @@ final class TAQI_Life_Dropshipping {
                         if (batchCancelled) {
                             label.textContent = 'Batch operation cancelled.'; detail.textContent += ' Resume is available from the next product.';
                         } else {
-                            localStorage.removeItem(resumeKey); label.textContent = 'Batch operation completed.';
+                            localStorage.removeItem(resumeKey); label.textContent = failed ? 'Batch operation completed with errors; failed items were skipped.' : 'Batch operation completed.';
                         }
                     } catch (error) {
                         label.textContent = 'Batch operation stopped'; detail.textContent = error.message;
