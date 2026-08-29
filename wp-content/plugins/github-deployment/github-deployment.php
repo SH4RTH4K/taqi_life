@@ -138,7 +138,15 @@ final class TAQI_GitHub_Deployment {
         }
         $base['remote'] = trim( $target['output'] );
         $changes = $this->git( array( 'status', '--porcelain', '--untracked-files=no' ) );
-        $base['changes'] = array_values( array_filter( preg_split( '/\R/', trim( $changes['output'] ) ) ) );
+        $raw_changes = array_values( array_filter( preg_split( '/\R/', trim( $changes['output'] ) ) ) );
+        $base['changes'] = array();
+        foreach ( $raw_changes as $change_line ) {
+            // Ignore runtime modifications to JetBackup config which updates hourly
+            if ( strpos( $change_line, 'wp-content/plugins/backup/config/config.php' ) !== false ) {
+                continue;
+            }
+            $base['changes'][] = $change_line;
+        }
         $ahead  = trim( $this->git( array( 'rev-list', '--count', 'HEAD..' . $remote_ref ) )['output'] );
         $behind = trim( $this->git( array( 'rev-list', '--count', $remote_ref . '..HEAD' ) )['output'] );
         $base['ahead']  = absint( $ahead );
