@@ -101,7 +101,7 @@ final class TAQI_Life_Dropshipping {
     }
 
     public function register_content_types() {
-        register_taxonomy( 'taqi_category', array( 'taqi_product' ), array( 'label' => 'Dropshipping Categories', 'public' => false, 'show_ui' => true, 'hierarchical' => true, 'show_in_rest' => false ) );
+        register_taxonomy( 'taqi_category', array( 'taqi_product' ), array( 'label' => 'Dropshipping Categories', 'public' => false, 'show_ui' => true, 'hierarchical' => true, 'show_in_rest' => false, 'show_in_nav_menus' => true ) );
         register_post_type( 'taqi_product', array( 'label' => 'Dropshipping Products', 'public' => false, 'show_ui' => true, 'show_in_menu' => false, 'supports' => array( 'title', 'editor', 'thumbnail' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
         register_post_type( 'taqi_product_variation', array( 'label' => 'Dropshipping Variations', 'public' => false, 'show_ui' => false, 'supports' => array( 'title' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
     }
