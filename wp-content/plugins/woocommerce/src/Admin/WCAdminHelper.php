@@ -182,7 +182,7 @@ class WCAdminHelper {
 		 */
 		$is_store_page = apply_filters( 'woocommerce_is_extension_store_page', false, $url );
 
-		return filter_var( $is_store_page, FILTER_VALIDATE_BOOL );
+		return filter_var( $is_store_page, FILTER_VALIDATE_BOOLEAN );
 	}
 
 	/**

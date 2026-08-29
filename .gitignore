@@ -2,9 +2,17 @@
 database-config.php
 wp-config.php
 
+# Database import utility (must not be web-accessible in production)
+database-import.php
+database-import.php.disabled
+
+# SQL dumps (contain full database data)
+*.sql
+
 # Local runtime/debug files
 error_log
 *.log
+wp-content/debug.log
 
 # Local editor and OS files
 .vscode/
@@ -15,6 +23,10 @@ Thumbs.db
 # Temporary/import files
 *.tmp
 *.temp
+*.disabled
 
 # WordPress runtime media uploads
 wp-content/uploads/
+
+# Deployment backups
+wp-content/uploads/taqi-deployment-backups/

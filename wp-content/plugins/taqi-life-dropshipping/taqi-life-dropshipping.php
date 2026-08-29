@@ -83,6 +83,9 @@ final class TAQI_Life_Dropshipping {
 
     private static $instance = null;
 
+    /** In-memory cache for settings — avoids repeated get_option() per product in a batch. */
+    private $settings_cache = null;
+
     public static function instance() {
         if ( null === self::$instance ) {
             self::$instance = new self();
@@ -208,6 +211,10 @@ final class TAQI_Life_Dropshipping {
     }
 
     private function settings() {
+        if ( null !== $this->settings_cache ) {
+            return $this->settings_cache;
+        }
+
         $saved    = get_option( self::OPTION_SETTINGS, array() );
         $saved    = is_array( $saved ) ? $saved : array();
         $settings = wp_parse_args( $saved, $this->defaults() );
@@ -246,6 +253,7 @@ final class TAQI_Life_Dropshipping {
             update_option( self::OPTION_SETTINGS, $settings, false );
         }
 
+        $this->settings_cache = $settings;
         return $settings;
     }
 
@@ -330,7 +338,7 @@ final class TAQI_Life_Dropshipping {
             return new WP_Error( 'taqi_invalid_json', 'Supplier API returned invalid JSON.' );
         }
 
-        set_transient( $cache_key, $data, '' !== trim( (string) $category_filter ) ? 900 : 60 );
+        set_transient( $cache_key, $data, '' !== trim( (string) $category_filter ) ? 900 : 600 );
         return $data;
     }
 
@@ -670,6 +678,7 @@ final class TAQI_Life_Dropshipping {
             // Store the verified endpoint for convenience only.
             // Product imports remain on /product and are never redirected here.
             $settings['category_endpoint'] = $verified['endpoint'];
+            $this->settings_cache = null;
             update_option( self::OPTION_SETTINGS, $settings, false );
         }
 
@@ -1072,7 +1081,16 @@ final class TAQI_Life_Dropshipping {
         $product->update_meta_data( '_taqi_supplier_name', sanitize_text_field( $settings['supplier_name'] ) );
         $product->update_meta_data( '_taqi_supplier_id', (string) $supplier_id );
         $product->update_meta_data( '_taqi_supplier_code', $sku );
-        $product->update_meta_data( '_taqi_supplier_raw_payload', wp_json_encode( $supplier_product, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+
+        // Only rewrite the raw payload when it has actually changed (saves a large postmeta write on every resync).
+        $new_payload = wp_json_encode( $supplier_product, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+        $new_hash    = md5( (string) $new_payload );
+        $old_hash    = (string) $product->get_meta( '_taqi_supplier_raw_hash', true );
+        if ( $old_hash !== $new_hash ) {
+            $product->update_meta_data( '_taqi_supplier_raw_payload', $new_payload );
+            $product->update_meta_data( '_taqi_supplier_raw_hash', $new_hash );
+        }
+
         $product->update_meta_data( '_taqi_sync_status', 'active' );
         $product->update_meta_data( '_taqi_last_sync_at', current_time( 'mysql' ) );
         $product->delete_meta_data( '_taqi_sync_cancelled_at' );
@@ -1094,7 +1112,7 @@ final class TAQI_Life_Dropshipping {
         }
     }
 
-    private function resync_product( $product_id, $supplier_product, $api_page = 0 ) {
+    private function resync_product( $product_id, $supplier_product, $api_page = 0, $skip_images = false ) {
         $supplier_id = $this->supplier_product_id( $supplier_product );
         $product     = $this->validate_linked_product( $product_id, $supplier_id, false );
         if ( is_wp_error( $product ) ) {
@@ -1162,7 +1180,15 @@ final class TAQI_Life_Dropshipping {
         $product->save();
 
         // Safe image re-sync: keep local images and add any supplier images that are missing.
-        $image_sync = $this->sync_product_images( $product, $supplier_product, $product->get_name(), true );
+        $image_sync = $this->sync_product_images( $product, $supplier_product, $product->get_name(), true, $skip_images );
+
+        $message = $skip_images
+            ? 'Product re-synced (price, stock, categories, metadata refreshed). Images were skipped.'
+            : sprintf(
+                'Product re-synced. Supplier price, stock, mapped categories and metadata were refreshed. Local title/description/images were preserved, and %d supplier image(s) were detected with %d new download(s).',
+                isset( $image_sync['supplier_urls'] ) ? absint( $image_sync['supplier_urls'] ) : 0,
+                isset( $image_sync['downloaded'] ) ? absint( $image_sync['downloaded'] ) : 0
+            );
 
         return array(
             'status'             => 'resynced',
@@ -1170,11 +1196,7 @@ final class TAQI_Life_Dropshipping {
             'supplier_id'        => $supplier_id,
             'updated_variations' => $updated_variations,
             'image_sync'         => $image_sync,
-            'message'            => sprintf(
-                'Product re-synced. Supplier price, stock, mapped categories and metadata were refreshed. Local title/description/images were preserved, and %d supplier image(s) were detected with %d new download(s).',
-                isset( $image_sync['supplier_urls'] ) ? absint( $image_sync['supplier_urls'] ) : 0,
-                isset( $image_sync['downloaded'] ) ? absint( $image_sync['downloaded'] ) : 0
-            ),
+            'message'            => $message,
         );
     }
 
@@ -1438,7 +1460,11 @@ final class TAQI_Life_Dropshipping {
      * Initial import uses the first supplier image as featured and the rest as gallery.
      * Re-sync keeps existing local images and adds any supplier images that are missing.
      */
-    private function sync_product_images( $product, $supplier_product, $name, $merge_existing = true ) {
+    private function sync_product_images( $product, $supplier_product, $name, $merge_existing = true, $skip = false ) {
+        if ( $skip ) {
+            return array( 'supplier_urls' => 0, 'downloaded' => 0, 'gallery_added' => 0, 'skipped' => true );
+        }
+
         $settings = $this->settings();
         if ( 'yes' !== $settings['import_images'] || ! $product || ! ( $product instanceof TAQI_Life_Product ) ) {
             return array( 'supplier_urls' => 0, 'downloaded' => 0, 'gallery_added' => 0 );
@@ -2199,11 +2225,12 @@ final class TAQI_Life_Dropshipping {
         }
     }
 
-    private function import_product_images( $product, $supplier_product, $name ) {
-        return $this->sync_product_images( $product, $supplier_product, $name, false );
+
+    private function import_product_images( $product, $supplier_product, $name, $skip = false ) {
+        return $this->sync_product_images( $product, $supplier_product, $name, false, $skip );
     }
 
-    private function create_simple_product( $supplier_product, $name, $supplier_id, $sku ) {
+    private function create_simple_product( $supplier_product, $name, $supplier_id, $sku, $skip_images = false ) {
         $product = new TAQI_Life_Product( 'simple' );
         $this->set_common_product_data( $product, $supplier_product, $name, $supplier_id, $sku );
 
@@ -2229,11 +2256,11 @@ final class TAQI_Life_Dropshipping {
             return new WP_Error( 'taqi_import_failed', 'The standalone product could not be saved.' );
         }
 
-        $this->import_product_images( $product, $supplier_product, $name );
+        $this->import_product_images( $product, $supplier_product, $name, $skip_images );
         return $product_id;
     }
 
-    private function create_variable_product( $supplier_product, $model, $name, $supplier_id, $sku ) {
+    private function create_variable_product( $supplier_product, $model, $name, $supplier_id, $sku, $skip_images = false ) {
         $product = new TAQI_Life_Product( 'variable' );
         $this->set_common_product_data( $product, $supplier_product, $name, $supplier_id, $sku );
 
@@ -2324,13 +2351,13 @@ final class TAQI_Life_Dropshipping {
 
         $product = new TAQI_Life_Product( 'variable', $product_id );
         if ( $product ) {
-            $this->import_product_images( $product, $supplier_product, $name );
+            $this->import_product_images( $product, $supplier_product, $name, $skip_images );
         }
 
         return $product_id;
     }
 
-    private function import_product( $supplier_product, $api_page = 0, $import_category_id = 0, $import_category_path = '' ) {
+    private function import_product( $supplier_product, $api_page = 0, $import_category_id = 0, $import_category_path = '', $skip_images = false ) {
         $supplier_id = $this->supplier_product_id( $supplier_product );
         if ( '' === $supplier_id ) {
             return new WP_Error( 'taqi_missing_supplier_id', 'Supplier product does not contain a product ID.' );
@@ -2362,7 +2389,7 @@ final class TAQI_Life_Dropshipping {
         if ( $cancelled_id ) {
             return new WP_Error(
                 'taqi_cancelled_product_exists',
-                'This supplier product was previously imported and its sync is cancelled. Use “Re-link & Sync” instead of importing a duplicate.'
+                'This supplier product was previously imported and its sync is cancelled. Use "Re-link & Sync" instead of importing a duplicate.'
             );
         }
 
@@ -2386,7 +2413,7 @@ final class TAQI_Life_Dropshipping {
             if ( $sku_owner ) {
                 return new WP_Error(
                     'taqi_sku_conflict',
-                    'Import blocked: supplier code/SKU “' . $sku . '” is already used by WooCommerce product ID ' . absint( $sku_owner ) . '. This validation prevents duplicate products. Edit/delete/re-link the existing product first.'
+                    'Import blocked: supplier code/SKU "' . $sku . '" is already used by WooCommerce product ID ' . absint( $sku_owner ) . '. This validation prevents duplicate products. Edit/delete/re-link the existing product first.'
                 );
             }
         }
@@ -2396,21 +2423,21 @@ final class TAQI_Life_Dropshipping {
         $use_variable = 'yes' === $settings['import_variations'] && $this->has_variations( $supplier_product ) && ! empty( $model['rows'] ) && ! empty( $model['attributes'] );
 
         if ( $use_variable ) {
-            $product_id = $this->create_variable_product( $supplier_product, $model, $name, $supplier_id, $sku );
+            $product_id = $this->create_variable_product( $supplier_product, $model, $name, $supplier_id, $sku, $skip_images );
             $type       = 'variable';
             if ( is_wp_error( $product_id ) ) {
                 // Some supplier rows advertise variation references but do not
                 // contain enough readable option data to create real variations.
                 // Import the product safely as Simple instead of losing the item.
                 $variation_error = $product_id->get_error_message();
-                $product_id      = $this->create_simple_product( $supplier_product, $name, $supplier_id, $sku );
+                $product_id      = $this->create_simple_product( $supplier_product, $name, $supplier_id, $sku, $skip_images );
                 if ( ! is_wp_error( $product_id ) ) {
                     update_post_meta( $product_id, '_taqi_variation_import_note', 'Imported as a Simple product because supplier variation data was incomplete: ' . $variation_error );
                 }
                 $type = 'simple';
             }
         } else {
-            $product_id = $this->create_simple_product( $supplier_product, $name, $supplier_id, $sku );
+            $product_id = $this->create_simple_product( $supplier_product, $name, $supplier_id, $sku, $skip_images );
             $type       = 'simple';
         }
 
@@ -2436,7 +2463,7 @@ final class TAQI_Life_Dropshipping {
             'product_id'  => $product_id,
             'supplier_id' => $supplier_id,
             'type'        => $type,
-            'message'     => 'Imported successfully and linked for synchronization.',
+            'message'     => 'Imported successfully and linked for synchronization.' . ( $skip_images ? ' Images skipped — download them later via Re-sync.' : '' ),
         );
     }
 
@@ -2698,6 +2725,7 @@ final class TAQI_Life_Dropshipping {
         $new['import_images']     = ! empty( $_POST['import_images'] ) ? 'yes' : 'no';
         $new['import_variations'] = ! empty( $_POST['import_variations'] ) ? 'yes' : 'no';
 
+        $this->settings_cache = null;
         update_option( self::OPTION_SETTINGS, $new, false );
         return 'API/import settings saved.';
     }
@@ -2823,6 +2851,7 @@ final class TAQI_Life_Dropshipping {
                 $settings['cost_source']            = 'sale_price';
                 $settings['import_supplier_sale']   = 'no';
 
+                $this->settings_cache = null;
                 update_option( self::OPTION_SETTINGS, $settings, false );
                 $message = 'Pricing rules saved. Minimum % controls the lowest allowed price; TAQI % controls the normal TAQI LIFE selling price.';
             }
@@ -3688,8 +3717,9 @@ final class TAQI_Life_Dropshipping {
         <?php
     }
 
-    private function handle_all_product_pages( $action, $last_page ) {
-        $results = array();
+    private function handle_all_product_pages( $action, $last_page, $import_category_id = 0, $import_category_path = '' ) {
+        $results    = array();
+        $linked_map = $this->linked_products_map(); // pre-built map — no per-product DB query needed.
         for ( $page = 1; $page <= $last_page; $page++ ) {
             $data = $this->api_request_products( $page );
             if ( is_wp_error( $data ) ) {
@@ -3701,14 +3731,19 @@ final class TAQI_Life_Dropshipping {
                 if ( '' === $supplier_id ) {
                     continue;
                 }
-                $product_id = $this->find_imported_product_id( $supplier_id );
+                $linked     = isset( $linked_map[ (string) $supplier_id ] ) ? $linked_map[ (string) $supplier_id ] : array();
+                $product_id = isset( $linked['active'] ) ? absint( $linked['active'] ) : 0;
                 if ( 'all_import' === $action ) {
-            $result = $this->import_product( $product, $page, $import_category_id, $import_category_path );
+                    $result = $this->import_product( $product, $page, $import_category_id, $import_category_path );
                     if ( is_wp_error( $result ) ) {
                         $results[] = $result;
                     } else {
                         $result['supplier_id'] = $supplier_id;
-                        $results[] = $result;
+                        $results[]             = $result;
+                        // Keep the map current so subsequent pages detect the newly imported product.
+                        if ( isset( $result['product_id'] ) && 'imported' === $result['status'] ) {
+                            $linked_map[ (string) $supplier_id ] = array( 'active' => (int) $result['product_id'] );
+                        }
                     }
                 } elseif ( 'all_resync' === $action && $product_id ) {
                     $results[] = $this->resync_product( $product_id, $product, $page );
@@ -3745,7 +3780,7 @@ final class TAQI_Life_Dropshipping {
         }
 
         if ( in_array( $action, array( 'all_import', 'all_resync', 'all_cancel' ), true ) ) {
-            return $this->handle_all_product_pages( $action, $last_page );
+            return $this->handle_all_product_pages( $action, $last_page, $import_category_id, $import_category_path );
         }
 
         $product_map = array();
@@ -3920,7 +3955,8 @@ final class TAQI_Life_Dropshipping {
 
         $product    = $products[ $item ];
         $supplier_id = $this->supplier_product_id( $product );
-        $linked_map = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
+        $linked_map  = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
+        $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
         $processed  = 0;
         $skipped    = 0;
         $failed     = 0;
@@ -3931,9 +3967,9 @@ final class TAQI_Life_Dropshipping {
         } elseif ( ! $this->matches_supplier_category_filter( $product, $supplier_category_filter ) ) {
             ++$skipped;
         } elseif ( 'all_import' === $action ) {
-                    // Preserve the selected destination category during the
-                    // AJAX batch import as well as during single imports.
-                    $result = $this->import_product( $product, $page, $import_category_id, $import_category_path );
+            // Preserve the selected destination category during the
+            // AJAX batch import as well as during single imports.
+            $result = $this->import_product( $product, $page, $import_category_id, $import_category_path, $skip_images );
         } else {
             $linked = isset( $linked_map[ (string) $supplier_id ] ) ? $linked_map[ (string) $supplier_id ] : array();
             $product_id = isset( $linked['active'] ) ? absint( $linked['active'] ) : 0;
@@ -3941,7 +3977,7 @@ final class TAQI_Life_Dropshipping {
                 ++$skipped;
             } else {
                 $result = 'all_resync' === $action
-                    ? $this->resync_product( $product_id, $product, $page )
+                    ? $this->resync_product( $product_id, $product, $page, $skip_images )
                     : $this->cancel_product_sync( $product_id, $supplier_id );
             }
         }
@@ -4164,7 +4200,7 @@ final class TAQI_Life_Dropshipping {
                 <input type="hidden" name="single_supplier_id" id="single_supplier_id" value="">
                 <input type="hidden" name="supplier_category_filter" id="supplier_category_filter" value="">
                 <input type="hidden" name="taqi_import_category_id" id="taqi_import_category_id" value="0">
-                <div class="taqi-import-bar"><?php if ( ! $category_filter ) : ?><button type="submit" class="button button-primary" onclick="document.getElementById('taqi_import_action').value='bulk';">Import Selected Page</button><?php endif; ?><button type="submit" class="button" data-bulk-action="bulk_resync">Re-sync Selected</button><button type="submit" class="button" data-bulk-action="bulk_cancel" data-confirm="Cancel synchronization for all selected linked products?">Cancel Selected</button><button type="submit" class="button button-primary" data-all-action="all_import"><?php if ( $category_filter ) : ?>Import Filtered Products<?php else : ?>Import All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_resync"><?php if ( $category_filter ) : ?>Re-sync Filtered Products<?php else : ?>Re-sync All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_cancel" data-confirm="Cancel synchronization across all <?php echo esc_attr( $batch_last_page ); ?> pages?"><?php if ( $category_filter ) : ?>Cancel Filtered Products<?php else : ?>Cancel All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><span class="description">Only products matching the selected category are processed.</span></div>
+                <div class="taqi-import-bar"><?php if ( ! $category_filter ) : ?><button type="submit" class="button button-primary" onclick="document.getElementById('taqi_import_action').value='bulk';">Import Selected Page</button><?php endif; ?><button type="submit" class="button" data-bulk-action="bulk_resync">Re-sync Selected</button><button type="submit" class="button" data-bulk-action="bulk_cancel" data-confirm="Cancel synchronization for all selected linked products?">Cancel Selected</button><button type="submit" class="button button-primary" data-all-action="all_import"><?php if ( $category_filter ) : ?>Import Filtered Products<?php else : ?>Import All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_resync"><?php if ( $category_filter ) : ?>Re-sync Filtered Products<?php else : ?>Re-sync All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_cancel" data-confirm="Cancel synchronization across all <?php echo esc_attr( $batch_last_page ); ?> pages?"><?php if ( $category_filter ) : ?>Cancel Filtered Products<?php else : ?>Cancel All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><label title="Skipping images makes batch operations 5–50× faster. You can download images later by running Re-sync on imported products." style="white-space:nowrap;font-weight:600;cursor:pointer;"><input type="checkbox" id="taqi-skip-images-checkbox" style="margin-right:4px;">⚡ Skip images (faster)</label><span class="description">Only products matching the selected category are processed.</span></div>
                 <div id="taqi-batch-progress" class="taqi-batch-progress" hidden><strong id="taqi-batch-label">Preparing batch…</strong><progress id="taqi-batch-bar" value="0" max="<?php echo esc_attr( $batch_last_page ); ?>"></progress><span id="taqi-batch-detail"></span><button type="button" id="taqi-batch-cancel" class="button taqi-batch-cancel">Cancel Batch</button></div>
 
                 <div id="taqi-batch-errors" class="notice notice-error inline" hidden style="margin:0 0 14px;"><p><strong>Failure reasons</strong></p><ul id="taqi-batch-error-list" style="margin-left:20px;"></ul></div>
@@ -4378,6 +4414,7 @@ final class TAQI_Life_Dropshipping {
                             let item = page === startPage ? startItem : 0, count = 0;
                             while (true) {
                                 if (batchCancelled) break;
+                                const skipImagesCheckbox = document.getElementById('taqi-skip-images-checkbox');
                                 const body = new URLSearchParams({
                                     action: 'taqi_process_all_pages',
                                     batch_action: btn.dataset.allAction,
@@ -4387,6 +4424,7 @@ final class TAQI_Life_Dropshipping {
                                     import_category_id: (document.querySelector('[name="taqi_import_category_id"]') || {}).value || '0',
                                     import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
                                     supplier_category_filter: (document.querySelector('[name="supplier_category"]') || {}).value || '',
+                                    skip_images: (skipImagesCheckbox && skipImagesCheckbox.checked) ? 'true' : 'false',
                                     nonce: '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>'
                                 });
                                 const response = await fetch(ajaxurl, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
@@ -4839,7 +4877,7 @@ final class TAQI_Life_Dropshipping {
             'taqi_dropshipping_info',
             'TAQI LIFE Dropshipping Information',
             array( $this, 'render_product_meta_box' ),
-            'product',
+            'taqi_product',
             'side',
             'default'
         );
