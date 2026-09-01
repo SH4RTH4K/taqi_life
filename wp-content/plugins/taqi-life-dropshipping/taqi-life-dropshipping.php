@@ -22,13 +22,13 @@ final class TAQI_Life_Product {
             $post = get_post( $this->id );
             if ( $post ) {
                 $this->data = array( 'name' => $post->post_title, 'description' => $post->post_content, 'status' => $post->post_status, 'menu_order' => $post->menu_order );
-                $this->type = 'taqi_product_variation' === $post->post_type ? 'variation' : ( 'variable' === get_post_meta( $this->id, '_taqi_product_type', true ) ? 'variable' : 'simple' );
+                $this->type = 'taqi_variation' === $post->post_type ? 'variation' : ( 'variable' === get_post_meta( $this->id, '_taqi_product_type', true ) ? 'variable' : 'simple' );
             }
         }
     }
     public function get_id() { return $this->id; }
     public function get_name() { return isset( $this->data['name'] ) ? $this->data['name'] : ''; }
-    public function get_children() { return array_map( 'absint', get_posts( array( 'post_type' => 'taqi_product_variation', 'post_status' => 'any', 'post_parent' => $this->id, 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'menu_order', 'order' => 'ASC' ) ) ); }
+    public function get_children() { return array_map( 'absint', get_posts( array( 'post_type' => 'taqi_variation', 'post_status' => 'any', 'post_parent' => $this->id, 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'menu_order', 'order' => 'ASC' ) ) ); }
     public function is_type( $type ) { return $this->type === $type; }
     public function get_meta( $key, $single = true ) { return get_post_meta( $this->id, $key, $single ); }
     public function update_meta_data( $key, $value ) { $this->meta[ $key ] = $value; }
@@ -51,7 +51,7 @@ final class TAQI_Life_Product {
     public function get_gallery_image_ids() { return array_map( 'absint', (array) get_post_meta( $this->id, '_taqi_gallery_image_ids', true ) ); }
     public function set_gallery_image_ids( $ids ) { $this->data['gallery_ids'] = array_map( 'absint', (array) $ids ); }
     public function save() {
-        $post_type = 'variation' === $this->type ? 'taqi_product_variation' : 'taqi_product';
+        $post_type = 'variation' === $this->type ? 'taqi_variation' : 'taqi_product';
         $post = array( 'post_type' => $post_type, 'post_title' => isset( $this->data['name'] ) ? $this->data['name'] : 'Imported product', 'post_content' => isset( $this->data['description'] ) ? $this->data['description'] : '', 'post_status' => isset( $this->data['status'] ) ? $this->data['status'] : 'draft', 'post_parent' => isset( $this->data['parent_id'] ) ? $this->data['parent_id'] : 0, 'menu_order' => isset( $this->data['menu_order'] ) ? $this->data['menu_order'] : 0 );
         $post['ID'] = $this->id;
         $this->id = wp_insert_post( $post, true );
@@ -103,7 +103,7 @@ final class TAQI_Life_Dropshipping {
     public function register_content_types() {
         register_taxonomy( 'taqi_category', array( 'taqi_product' ), array( 'label' => 'Dropshipping Categories', 'public' => false, 'show_ui' => true, 'hierarchical' => true, 'show_in_rest' => false, 'show_in_nav_menus' => true ) );
         register_post_type( 'taqi_product', array( 'label' => 'Dropshipping Products', 'public' => false, 'show_ui' => true, 'show_in_menu' => false, 'supports' => array( 'title', 'editor', 'thumbnail' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
-        register_post_type( 'taqi_product_variation', array( 'label' => 'Dropshipping Variations', 'public' => false, 'show_ui' => false, 'supports' => array( 'title' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
+        register_post_type( 'taqi_variation', array( 'label' => 'Dropshipping Variations', 'public' => false, 'show_ui' => false, 'supports' => array( 'title' ), 'capability_type' => 'post', 'map_meta_cap' => true ) );
     }
 
     public function admin_menu() {
@@ -924,7 +924,7 @@ final class TAQI_Life_Dropshipping {
 
     private function sku_owner( $sku ) {
         if ( '' === (string) $sku ) { return 0; }
-        $ids = get_posts( array( 'post_type' => array( 'taqi_product', 'taqi_product_variation' ), 'post_status' => 'any', 'fields' => 'ids', 'posts_per_page' => 1, 'meta_query' => array( array( 'key' => '_taqi_sku', 'value' => (string) $sku ) ) ) );
+        $ids = get_posts( array( 'post_type' => array( 'taqi_product', 'taqi_variation' ), 'post_status' => 'any', 'fields' => 'ids', 'posts_per_page' => 1, 'meta_query' => array( array( 'key' => '_taqi_sku', 'value' => (string) $sku ) ) ) );
         return empty( $ids ) ? 0 : absint( $ids[0] );
     }
 
