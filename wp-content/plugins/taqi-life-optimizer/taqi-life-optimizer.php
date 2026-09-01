@@ -14,6 +14,11 @@ class TAQI_Life_Optimizer {
         add_action( 'init', array( $this, 'disable_emojis' ) );
         add_action( 'wp_enqueue_scripts', array( $this, 'optimize_woocommerce_scripts' ), 99 );
         add_filter( 'xmlrpc_enabled', '__return_false' );
+
+        // Forcefully disable LiteSpeed Cache CSS Combine & UCSS
+        // This permanently fixes the broken Astra theme layout (menu overlapping)
+        add_filter( 'litespeed_optm_css_comb', '__return_false' );
+        add_filter( 'litespeed_optm_ucss', '__return_false' );
     }
 
     public function disable_emojis() {
