@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class Taqi_Whatsapp_Settings {
@@ -14,6 +14,9 @@ class Taqi_Whatsapp_Settings {
             'business_account_id' => '',
             'phone_number_id' => '',
             'access_token' => '',
+            'gateway_url' => '',
+            'gateway_instance' => '',
+            'gateway_token' => '',
             'webhook_verify_token' => wp_generate_password(24, false),
             'api_version' => 'v19.0',
             'business_display_number' => '',
