@@ -30,8 +30,3 @@ wp-content/uploads/
 
 # Deployment backups
 wp-content/uploads/taqi-deployment-backups/
-
-# WhatsApp Node Engine Cache & Modules
-whatsapp-gateway/node_modules/
-whatsapp-gateway/.wwebjs_auth/
-whatsapp-gateway/.wwebjs_cache/
