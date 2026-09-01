@@ -1,6 +1,37 @@
-﻿‣潌慣⁬慤慴慢敳挠敲敤瑮慩獬愠摮朠湥牥瑡摥挠湯楦畧慲楴湯搊瑡扡獡ⵥ潣普杩瀮灨眊⵰潣普杩瀮灨ਊ‣慄慴慢敳椠灭牯⁴瑵汩瑩⁹洨獵⁴潮⁴敢眠扥愭捣獥楳汢⁥湩瀠潲畤瑣潩⥮搊瑡扡獡ⵥ浩潰瑲瀮灨搊瑡扡獡ⵥ浩潰瑲瀮灨搮獩扡敬੤⌊匠䱑搠浵獰⠠潣瑮楡⁮畦汬搠瑡扡獡⁥慤慴਩⸪煳੬⌊䰠捯污爠湵楴敭搯扥杵映汩獥攊牲牯江杯⨊氮杯眊⵰潣瑮湥⽴敤畢⹧潬੧⌊䰠捯污攠楤潴⁲湡⁤协映汩獥⸊獶潣敤ਯ椮敤⽡⸊卄卟潴敲吊畨扭⹳扤ਊ‣敔灭牯牡⽹浩潰瑲映汩獥⨊琮灭⨊琮浥ੰ⸪楤慳汢摥ਊ‣潗摲牐獥⁳畲瑮浩⁥敭楤⁡灵潬摡ੳ灷挭湯整瑮甯汰慯獤ਯ⌊䐠灥潬浹湥⁴慢正灵ੳ灷挭湯整瑮甯汰慯獤琯煡⵩敤汰祯敭瑮戭捡畫獰ਯwhatsapp-gateway/node_modules/
-.wwebjs_auth/
-.wwebjs_cache/
+# Local database credentials and generated configuration
+database-config.php
+wp-config.php
+
+# Database import utility (must not be web-accessible in production)
+database-import.php
+database-import.php.disabled
+
+# SQL dumps (contain full database data)
+*.sql
+
+# Local runtime/debug files
+error_log
+*.log
+wp-content/debug.log
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary/import files
+*.tmp
+*.temp
+*.disabled
+
+# WordPress runtime media uploads
+wp-content/uploads/
+
+# Deployment backups
+wp-content/uploads/taqi-deployment-backups/
+
+# WhatsApp Node Engine Cache & Modules
 whatsapp-gateway/node_modules/
 whatsapp-gateway/.wwebjs_auth/
 whatsapp-gateway/.wwebjs_cache/
