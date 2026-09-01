@@ -3905,7 +3905,7 @@ final class TAQI_Life_Dropshipping {
 
     public function ajax_process_all_pages() {
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( array( 'message' => 'Permission denied.' ), 403 );
+            if (ob_get_length()) { ob_clean(); } wp_send_json_error( array( 'message' => 'Permission denied.' ), 403 );
         }
         check_ajax_referer( 'taqi_all_pages_ajax', 'nonce' );
 
@@ -3929,7 +3929,7 @@ final class TAQI_Life_Dropshipping {
         $item   = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
         $total  = isset( $_POST['batch_total'] ) ? min( 50, max( 1, absint( $_POST['batch_total'] ) ) ) : 1;
         if ( ! in_array( $action, array( 'all_import', 'all_resync', 'all_cancel' ), true ) ) {
-            wp_send_json_error( array( 'message' => 'Invalid batch action.' ), 400 );
+            if (ob_get_length()) { ob_clean(); } wp_send_json_error( array( 'message' => 'Invalid batch action.' ), 400 );
         }
 
         set_time_limit( 120 );
@@ -3938,7 +3938,7 @@ final class TAQI_Life_Dropshipping {
             // A supplier page can fail independently. Return a successful batch
             // response so the browser advances to the next page and reports the
             // failure in the final summary instead of aborting the whole batch.
-            wp_send_json_success( array( 'page' => $page, 'item' => $item, 'count' => 0, 'total' => $total, 'processed' => 0, 'skipped' => 0, 'failed' => 1, 'errors' => array( 'Page ' . $page . ': ' . $data->get_error_message() ), 'total_pages' => $total, 'page_done' => true, 'done' => $page >= $total ) );
+            if (ob_get_length()) { ob_clean(); } wp_send_json_success( array( 'page' => $page, 'item' => $item, 'count' => 0, 'total' => $total, 'processed' => 0, 'skipped' => 0, 'failed' => 1, 'errors' => array( 'Page ' . $page . ': ' . $data->get_error_message() ), 'total_pages' => $total, 'page_done' => true, 'done' => $page >= $total ) );
         }
 
         $products = $this->extract_products( $data );
@@ -3950,7 +3950,7 @@ final class TAQI_Life_Dropshipping {
             } ) );
         }
         if ( ! isset( $products[ $item ] ) ) {
-            wp_send_json_success( array( 'page' => $page, 'item' => $item, 'count' => count( $products ), 'page_done' => true, 'done' => $page >= $total ) );
+            if (ob_get_length()) { ob_clean(); } wp_send_json_success( array( 'page' => $page, 'item' => $item, 'count' => count( $products ), 'page_done' => true, 'done' => $page >= $total ) );
         }
 
         $product    = $products[ $item ];
@@ -3989,7 +3989,7 @@ final class TAQI_Life_Dropshipping {
             ++$processed;
         }
 
-        wp_send_json_success(
+        if (ob_get_length()) { ob_clean(); } wp_send_json_success(
             array(
                 'page'      => $page,
                 'item'      => $item,
