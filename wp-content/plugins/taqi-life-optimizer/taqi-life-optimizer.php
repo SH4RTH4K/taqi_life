@@ -35,13 +35,14 @@ class TAQI_Life_Optimizer {
 
     // Step 2: Database Optimization
     public function add_admin_menu() {
-        add_submenu_page(
-            'tools.php',
+        add_menu_page(
             'TAQI Optimizer',
             'TAQI Optimizer',
             'manage_options',
             'taqi-optimizer',
-            array( $this, 'render_admin_page' )
+            array( $this, 'render_admin_page' ),
+            'dashicons-performance',
+            80
         );
     }
 
