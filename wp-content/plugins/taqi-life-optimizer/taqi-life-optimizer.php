@@ -32,5 +32,75 @@ class TAQI_Life_Optimizer {
             }
         }
     }
+
+    // Step 2: Database Optimization
+    public function add_admin_menu() {
+        add_submenu_page(
+            'tools.php',
+            'TAQI Optimizer',
+            'TAQI Optimizer',
+            'manage_options',
+            'taqi-optimizer',
+            array( $this, 'render_admin_page' )
+        );
+    }
+
+    public function handle_admin_actions() {
+        if ( ! current_user_can( 'manage_options' ) || ! isset( $_POST['taqi_optimize_action'] ) ) {
+            return;
+        }
+        
+        check_admin_referer( 'taqi_optimize_action_nonce' );
+        
+        global $wpdb;
+        $action = $_POST['taqi_optimize_action'];
+        
+        if ( $action === 'clear_transients' ) {
+            $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_%' OR option_name LIKE '_site_transient_%'" );
+            add_settings_error( 'taqi_messages', 'taqi_message', 'All transients cleared successfully.', 'updated' );
+        } elseif ( $action === 'clear_orphaned_meta' ) {
+            $wpdb->query( "DELETE pm FROM {$wpdb->postmeta} pm LEFT JOIN {$wpdb->posts} wp ON wp.ID = pm.post_id WHERE wp.ID IS NULL" );
+            add_settings_error( 'taqi_messages', 'taqi_message', 'Orphaned postmeta cleared successfully.', 'updated' );
+        }
+    }
+
+    public function render_admin_page() {
+        global $wpdb;
+        $transient_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '_transient_%'" );
+        $orphaned_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->postmeta} pm LEFT JOIN {$wpdb->posts} wp ON wp.ID = pm.post_id WHERE wp.ID IS NULL" );
+        
+        settings_errors( 'taqi_messages' );
+        ?>
+        <div class="wrap">
+            <h1>TAQI Life Optimizer - Database Cleanup</h1>
+            <p>Use these tools to clean up database bloat left behind by dropshipping imports.</p>
+            
+            <form method="post" action="">
+                <?php wp_nonce_field( 'taqi_optimize_action_nonce' ); ?>
+                <table class="form-table">
+                    <tr>
+                        <th>Expired & Cached Transients</th>
+                        <td>
+                            <p>Currently found: <strong><?php echo esc_html( $transient_count ); ?></strong></p>
+                            <button type="submit" name="taqi_optimize_action" value="clear_transients" class="button button-primary">Clear All Transients</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Orphaned Post Meta</th>
+                        <td>
+                            <p>Currently found: <strong><?php echo esc_html( $orphaned_count ); ?></strong></p>
+                            <button type="submit" name="taqi_optimize_action" value="clear_orphaned_meta" class="button button-primary">Clear Orphaned Meta</button>
+                        </td>
+                    </tr>
+                </table>
+            </form>
+        </div>
+        <?php
+    }
 }
-new TAQI_Life_Optimizer();
+
+$optimizer = new TAQI_Life_Optimizer();
+// Hook admin menu and actions outside to ensure they run at the right time
+add_action( 'admin_menu', array( $optimizer, 'add_admin_menu' ) );
+add_action( 'admin_init', array( $optimizer, 'handle_admin_actions' ) );
+
