@@ -374,6 +374,7 @@ final class TAQI_GitHub_Deployment {
             .taqi-github-deployment .gdp-commits { width: 100%; border-collapse: collapse; margin-top: 14px; }
             .taqi-github-deployment .gdp-commits th, .taqi-github-deployment .gdp-commits td { padding: 8px; text-align: left; border-bottom: 1px solid #f0f0f1; font-size: 13px; }
             .taqi-github-deployment .gdp-note { padding: 12px; background: #fff8e5; border-left: 4px solid #dba617; margin-top: 14px; box-shadow: 0 1px 1px rgba(0,0,0,.04); }
+            #wpfooter { position: static !important; clear: both; margin-top: 40px; }
         </style>
         
         <div class="gdp-header">
