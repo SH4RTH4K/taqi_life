@@ -33,13 +33,9 @@ class Taqi_Whatsapp_Admin_Menu {
     public function handle_saves() {
         if ( isset( $_POST['taqi_whatsapp_save_settings'] ) && check_admin_referer( 'taqi_whatsapp_save' ) ) {
             $settings = array(
-                'provider' => sanitize_text_field( $_POST['provider'] ?? 'meta' ),
                 'business_account_id' => sanitize_text_field( $_POST['business_account_id'] ?? '' ),
                 'phone_number_id' => sanitize_text_field( $_POST['phone_number_id'] ?? '' ),
                 'access_token' => sanitize_text_field( $_POST['access_token'] ?? '' ),
-                'gateway_url' => esc_url_raw( $_POST['gateway_url'] ?? '' ),
-                'gateway_instance' => sanitize_text_field( $_POST['gateway_instance'] ?? '' ),
-                'gateway_token' => sanitize_text_field( $_POST['gateway_token'] ?? '' ),
                 'require_whatsapp_reg' => sanitize_text_field( $_POST['require_whatsapp_reg'] ?? 'no' )
             );
             Taqi_Whatsapp_Settings::save_settings( $settings );
@@ -61,74 +57,24 @@ class Taqi_Whatsapp_Admin_Menu {
                 <?php wp_nonce_field( 'taqi_whatsapp_save' ); ?>
                 <table class="form-table">
                     <tr>
-                        <th>API Provider</th>
+                        <th>Provider</th>
+                        <td><strong>Meta WhatsApp Cloud API</strong></td>
+                    </tr>
+                    <tr>
+                        <th>WhatsApp Business Account ID</th>
+                        <td><input type="text" name="business_account_id" class="regular-text" value="<?php echo esc_attr( $settings['business_account_id'] ); ?>"></td>
+                    </tr>
+                    <tr>
+                        <th>Phone Number ID</th>
+                        <td><input type="text" name="phone_number_id" class="regular-text" value="<?php echo esc_attr( $settings['phone_number_id'] ); ?>"></td>
+                    </tr>
+                    <tr>
+                        <th>Access Token</th>
                         <td>
-                            <select name="provider" id="taqi_whatsapp_provider">
-                                <option value="meta" <?php selected( $settings['provider'], 'meta' ); ?>>Official Meta Cloud API (Recommended)</option>
-                                <option value="gateway" <?php selected( $settings['provider'], 'gateway' ); ?>>Unofficial Gateway (QR Code Link)</option>
-                            </select>
+                            <input type="password" name="access_token" class="regular-text" placeholder="************************">
+                            <p class="description">Leave blank to keep the currently saved token.</p>
                         </td>
                     </tr>
-                </table>
-
-                <div id="taqi_provider_meta" style="<?php echo $settings['provider'] === 'meta' ? '' : 'display:none;'; ?>">
-                    <hr>
-                    <h2>Meta Cloud API Settings</h2>
-                    <table class="form-table">
-                        <tr>
-                            <th>WhatsApp Business Account ID</th>
-                            <td><input type="text" name="business_account_id" class="regular-text" value="<?php echo esc_attr( $settings['business_account_id'] ); ?>"></td>
-                        </tr>
-                        <tr>
-                            <th>Phone Number ID</th>
-                            <td><input type="text" name="phone_number_id" class="regular-text" value="<?php echo esc_attr( $settings['phone_number_id'] ); ?>"></td>
-                        </tr>
-                        <tr>
-                            <th>Access Token</th>
-                            <td>
-                                <input type="password" name="access_token" class="regular-text" placeholder="************************">
-                                <p class="description">Leave blank to keep the currently saved token.</p>
-                            </td>
-                        </tr>
-                    </table>
-                </div>
-
-                <div id="taqi_provider_gateway" style="<?php echo $settings['provider'] === 'gateway' ? '' : 'display:none;'; ?>">
-                    <hr>
-                    <h2>Unofficial Gateway Settings (QR Code)</h2>
-                    <p class="description">Connect to a third-party Node.js API Gateway (like Evolution API or WAPID) to scan a QR code.</p>
-                    <table class="form-table">
-                        <tr>
-                            <th>API Base URL</th>
-                            <td><input type="url" name="gateway_url" class="regular-text" value="<?php echo esc_attr( $settings['gateway_url'] ); ?>" placeholder="https://api.yourgateway.com"></td>
-                        </tr>
-                        <tr>
-                            <th>Instance Name / ID</th>
-                            <td><input type="text" name="gateway_instance" class="regular-text" value="<?php echo esc_attr( $settings['gateway_instance'] ); ?>" placeholder="instance-1234"></td>
-                        </tr>
-                        <tr>
-                            <th>API Token / Key</th>
-                            <td>
-                                <input type="password" name="gateway_token" class="regular-text" value="<?php echo esc_attr( $settings['gateway_token'] ); ?>" placeholder="************************">
-                            </td>
-                        </tr>
-                        <tr>
-                            <th>Link Device</th>
-                            <td>
-                                <button type="button" class="button button-secondary" id="taqi_generate_qr">Generate QR Code</button>
-                                <p class="description" style="margin-top:10px"><em>(Requires a valid Gateway URL and Token to connect to your third-party instance).</em></p>
-                                <div id="taqi_qr_container" style="margin-top: 15px; display: none;">
-                                    <div style="width: 250px; height: 250px; background: #fff; border: 1px solid #ccc; display: flex; align-items: center; justify-content: center;">
-                                        <span class="spinner is-active" style="float:none;"></span>
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
-                    </table>
-                </div>
-
-                <hr>
-                <table class="form-table">
                     <tr>
                         <th>Require WhatsApp on Registration</th>
                         <td>
@@ -144,23 +90,6 @@ class Taqi_Whatsapp_Admin_Menu {
                     <button type="button" class="button button-secondary">Test Connection</button>
                 </p>
             </form>
-            
-            <script>
-                document.getElementById('taqi_whatsapp_provider').addEventListener('change', function(e) {
-                    var isMeta = e.target.value === 'meta';
-                    document.getElementById('taqi_provider_meta').style.display = isMeta ? 'block' : 'none';
-                    document.getElementById('taqi_provider_gateway').style.display = isMeta ? 'none' : 'block';
-                });
-
-                document.getElementById('taqi_generate_qr').addEventListener('click', function() {
-                    var container = document.getElementById('taqi_qr_container');
-                    container.style.display = 'block';
-                    // Simulated loading for QR implementation
-                    setTimeout(function() {
-                        container.innerHTML = '<p style="color:red;font-weight:bold;">Gateway API could not be reached. Please save your valid gateway details first.</p>';
-                    }, 2000);
-                });
-            </script>
         </div>
         <?php
     }
