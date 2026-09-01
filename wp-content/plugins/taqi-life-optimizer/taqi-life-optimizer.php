@@ -57,8 +57,15 @@ class TAQI_Life_Optimizer {
         $action = $_POST['taqi_optimize_action'];
         
         if ( $action === 'clear_transients' ) {
-            $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_%' OR option_name LIKE '_site_transient_%'" );
-            add_settings_error( 'taqi_messages', 'taqi_message', 'All transients cleared successfully.', 'updated' );
+            $time_now = time();
+            // Delete expired transients
+            $wpdb->query( "DELETE a, b FROM {$wpdb->options} a, {$wpdb->options} b WHERE a.option_name LIKE '_transient_%' AND a.option_name NOT LIKE '_transient_timeout_%' AND b.option_name = CONCAT( '_transient_timeout_', SUBSTRING( a.option_name, 12 ) ) AND b.option_value < {$time_now}" );
+            $wpdb->query( "DELETE a, b FROM {$wpdb->options} a, {$wpdb->options} b WHERE a.option_name LIKE '_site_transient_%' AND a.option_name NOT LIKE '_site_transient_timeout_%' AND b.option_name = CONCAT( '_site_transient_timeout_', SUBSTRING( a.option_name, 17 ) ) AND b.option_value < {$time_now}" );
+            // Delete orphaned timeouts
+            $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_%' AND option_value < {$time_now}" );
+            $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '_site_transient_timeout_%' AND option_value < {$time_now}" );
+            
+            add_settings_error( 'taqi_messages', 'taqi_message', 'Expired transients cleared successfully.', 'updated' );
         } elseif ( $action === 'clear_orphaned_meta' ) {
             $wpdb->query( "DELETE pm FROM {$wpdb->postmeta} pm LEFT JOIN {$wpdb->posts} wp ON wp.ID = pm.post_id WHERE wp.ID IS NULL" );
             add_settings_error( 'taqi_messages', 'taqi_message', 'Orphaned postmeta cleared successfully.', 'updated' );
@@ -67,7 +74,8 @@ class TAQI_Life_Optimizer {
 
     public function render_admin_page() {
         global $wpdb;
-        $transient_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '_transient_%'" );
+        $time_now = time();
+        $expired_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_%' AND option_value < {$time_now}" );
         $orphaned_count = $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->postmeta} pm LEFT JOIN {$wpdb->posts} wp ON wp.ID = pm.post_id WHERE wp.ID IS NULL" );
         
         settings_errors( 'taqi_messages' );
@@ -80,10 +88,10 @@ class TAQI_Life_Optimizer {
                 <?php wp_nonce_field( 'taqi_optimize_action_nonce' ); ?>
                 <table class="form-table">
                     <tr>
-                        <th>Expired & Cached Transients</th>
+                        <th>Expired Transients</th>
                         <td>
-                            <p>Currently found: <strong><?php echo esc_html( $transient_count ); ?></strong></p>
-                            <button type="submit" name="taqi_optimize_action" value="clear_transients" class="button button-primary">Clear All Transients</button>
+                            <p>Currently found: <strong><?php echo esc_html( $expired_count ); ?></strong></p>
+                            <button type="submit" name="taqi_optimize_action" value="clear_transients" class="button button-primary">Clear Expired Transients</button>
                         </td>
                     </tr>
                     <tr>
