@@ -3988,10 +3988,15 @@ final class TAQI_Life_Dropshipping {
             $this->send_batch_json( true, array( 'page' => $page, 'item' => $item, 'count' => count( $products ), 'page_done' => true, 'done' => $page >= $total ) );
         }
 
-        $product_count = count( $products );
-        $next_item     = min( $product_count, $item + self::BATCH_CHUNK_SIZE );
-        $linked_map    = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
         $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
+        // Image sideloading can involve several remote downloads and image
+        // transformations. Keep those requests to one product so shared
+        // hosting does not terminate the request with HTTP 503. When images
+        // are skipped, use the larger chunk to reduce AJAX overhead.
+        $chunk_size    = $skip_images ? self::BATCH_CHUNK_SIZE : 1;
+        $product_count = count( $products );
+        $next_item     = min( $product_count, $item + $chunk_size );
+        $linked_map    = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
         $processed  = 0;
         $skipped    = 0;
         $failed     = 0;
@@ -4439,6 +4444,9 @@ final class TAQI_Life_Dropshipping {
                         const firewallMessage = 'The hosting firewall blocked this batch request. Ask your host to allowlist /wp-admin/admin-ajax.php for logged-in administrator requests or disable Imunify360 bot protection for this endpoint.';
                         if (/One moment, please|request is being verified|Imunify360|bot-protection|IPs used for automation/i.test(raw)) {
                             throw new Error(firewallMessage);
+                        }
+                        if (/502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i.test(raw)) {
+                            throw new Error('The hosting server stopped this batch request because it took too long or was temporarily unavailable.');
                         }
                         let result;
                         try {
