@@ -4424,6 +4424,10 @@ final class TAQI_Life_Dropshipping {
                     const buttons = document.querySelectorAll('[data-all-action], [data-bulk-action], .taqi-import-bar button');
                     async function readBatchResponse(response) {
                         const raw = (await response.text()).replace(/^\uFEFF/, '').trim();
+                        const firewallMessage = 'The hosting firewall blocked this batch request. Ask your host to allowlist /wp-admin/admin-ajax.php for logged-in administrator requests or disable Imunify360 bot protection for this endpoint.';
+                        if (/One moment, please|request is being verified|Imunify360|bot-protection|IPs used for automation/i.test(raw)) {
+                            throw new Error(firewallMessage);
+                        }
                         let result;
                         try {
                             result = JSON.parse(raw);
@@ -4436,6 +4440,9 @@ final class TAQI_Life_Dropshipping {
                         }
                         if (!result || typeof result !== 'object' || Array.isArray(result)) {
                             throw new Error('The server returned an unexpected batch response.');
+                        }
+                        if (typeof result.message === 'string' && /Imunify360|bot-protection|automation/i.test(result.message)) {
+                            throw new Error(firewallMessage);
                         }
                         return result;
                     }
@@ -4454,6 +4461,14 @@ final class TAQI_Life_Dropshipping {
                         }
                     }
                     let processed = 0, skipped = 0, failed = 0, errors = [];
+                    const saveBatchResume = function (page, item) {
+                        localStorage.setItem(resumeKey, JSON.stringify({
+                            page: Number(page),
+                            item: Number(item),
+                            total: Number(total),
+                            updated: Date.now()
+                        }));
+                    };
                     progress.hidden = false; bar.value = 0; label.textContent = 'Processing ' + btn.textContent.trim() + '…';
                     buttons.forEach(function (item) { item.disabled = true; });
                     cancelButton.disabled = false; cancelButton.hidden = false;
@@ -4476,7 +4491,20 @@ final class TAQI_Life_Dropshipping {
                                     skip_images: (skipImagesCheckbox && skipImagesCheckbox.checked) ? 'true' : 'false',
                                     nonce: '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>'
                                 });
-                                const response = await fetch(ajaxurl, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
+                                // Save before the request so a timeout, firewall
+                                // challenge, tab close, or network interruption
+                                // resumes this exact product on the next click.
+                                saveBatchResume(page, item);
+                                const response = await fetch(ajaxurl, {
+                                    method: 'POST',
+                                    credentials: 'same-origin',
+                                    headers: {
+                                        'Accept': 'application/json, text/javascript, */*; q=0.01',
+                                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                        'X-Requested-With': 'XMLHttpRequest'
+                                    },
+                                    body: body
+                                });
                                 const result = await readBatchResponse(response);
                                 if (!response.ok && result.success !== false) throw new Error('Batch request failed with HTTP ' + response.status + '.');
                                 if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Batch operation failed.');
@@ -4493,10 +4521,10 @@ final class TAQI_Life_Dropshipping {
                                 detail.textContent = 'Page ' + page + ' of ' + total + ' · product ' + Math.min(item + 1, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
                                 if (errors.length) detail.title = errors.join('\n');
                                 if (!count || item + 1 >= count) break;
-                                item++; localStorage.setItem(resumeKey, JSON.stringify({page: page, item: item}));
+                                item++; saveBatchResume(page, item);
                             }
                             if (batchCancelled) break;
-                            if (page < total) localStorage.setItem(resumeKey, JSON.stringify({page: page + 1, item: 0}));
+                            if (page < total) saveBatchResume(page + 1, 0);
                         }
                         if (batchCancelled) {
                             label.textContent = 'Batch operation cancelled.'; detail.textContent += ' Resume is available from the next product.';
@@ -4505,6 +4533,9 @@ final class TAQI_Life_Dropshipping {
                         }
                     } catch (error) {
                         label.textContent = 'Batch operation stopped'; detail.textContent = error.message;
+                        if (!batchCancelled) {
+                            detail.textContent += ' The current position was saved. Click Import All Pages again to resume.';
+                        }
                     }
                     buttons.forEach(function (item) { item.disabled = false; });
                     cancelButton.hidden = true;
