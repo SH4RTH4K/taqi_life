@@ -68,6 +68,13 @@ final class TAQI_Life_Product {
 
 final class TAQI_Life_Dropshipping {
 
+    /**
+     * Number of supplier products processed by one batch request.
+     * Keeping this small limits PHP execution time when images or variations
+     * need additional remote/database work.
+     */
+    const BATCH_CHUNK_SIZE = 5;
+
     const VERSION                       = '2.0.0';
     const OPTION_SETTINGS               = 'taqi_dropshipping_settings';
     const OPTION_LAST_TEST              = 'taqi_dropshipping_last_test';
@@ -3981,51 +3988,56 @@ final class TAQI_Life_Dropshipping {
             $this->send_batch_json( true, array( 'page' => $page, 'item' => $item, 'count' => count( $products ), 'page_done' => true, 'done' => $page >= $total ) );
         }
 
-        $product    = $products[ $item ];
-        $supplier_id = $this->supplier_product_id( $product );
-        $linked_map  = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
+        $product_count = count( $products );
+        $next_item     = min( $product_count, $item + self::BATCH_CHUNK_SIZE );
+        $linked_map    = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
         $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
         $processed  = 0;
         $skipped    = 0;
         $failed     = 0;
         $errors     = array();
-        $result     = null;
-        try {
-            if ( '' === $supplier_id ) {
-                ++$skipped;
-            } elseif ( ! $this->matches_supplier_category_filter( $product, $supplier_category_filter ) ) {
-                ++$skipped;
-            } elseif ( 'all_import' === $action ) {
-                // Preserve the selected destination category during the
-                // AJAX batch import as well as during single imports.
-                $result = $this->import_product( $product, $page, $import_category_id, $import_category_path, $skip_images );
-            } else {
-                $linked = isset( $linked_map[ (string) $supplier_id ] ) ? $linked_map[ (string) $supplier_id ] : array();
-                $product_id = isset( $linked['active'] ) ? absint( $linked['active'] ) : 0;
-                if ( ! $product_id ) {
+        for ( $batch_item = $item; $batch_item < $next_item; ++$batch_item ) {
+            $product     = $products[ $batch_item ];
+            $supplier_id = $this->supplier_product_id( $product );
+            $result      = null;
+            try {
+                if ( '' === $supplier_id ) {
                     ++$skipped;
+                } elseif ( ! $this->matches_supplier_category_filter( $product, $supplier_category_filter ) ) {
+                    ++$skipped;
+                } elseif ( 'all_import' === $action ) {
+                    // Preserve the selected destination category during the
+                    // AJAX batch import as well as during single imports.
+                    $result = $this->import_product( $product, $page, $import_category_id, $import_category_path, $skip_images );
                 } else {
-                    $result = 'all_resync' === $action
-                        ? $this->resync_product( $product_id, $product, $page, $skip_images )
-                        : $this->cancel_product_sync( $product_id, $supplier_id );
+                    $linked          = isset( $linked_map[ (string) $supplier_id ] ) ? $linked_map[ (string) $supplier_id ] : array();
+                    $product_id      = isset( $linked['active'] ) ? absint( $linked['active'] ) : 0;
+                    if ( ! $product_id ) {
+                        ++$skipped;
+                    } else {
+                        $result = 'all_resync' === $action
+                            ? $this->resync_product( $product_id, $product, $page, $skip_images )
+                            : $this->cancel_product_sync( $product_id, $supplier_id );
+                    }
                 }
+            } catch ( Throwable $exception ) {
+                $result = new WP_Error( 'taqi_batch_exception', 'Batch item failed: ' . $exception->getMessage() );
             }
-        } catch ( Throwable $exception ) {
-            $result = new WP_Error( 'taqi_batch_exception', 'Batch item failed: ' . $exception->getMessage() );
-        }
-        if ( null !== $result && is_wp_error( $result ) ) {
-            ++$failed;
-            $product_name = isset( $product['name'] ) ? $this->scalar( $product['name'] ) : ( 'Product ' . $supplier_id );
-            $errors[] = $product_name . ' (ID ' . $supplier_id . '): ' . $result->get_error_message();
-        } elseif ( null !== $result ) {
-            ++$processed;
+            if ( null !== $result && is_wp_error( $result ) ) {
+                ++$failed;
+                $product_name = isset( $product['name'] ) ? $this->scalar( $product['name'] ) : ( 'Product ' . $supplier_id );
+                $errors[]     = $product_name . ' (ID ' . $supplier_id . '): ' . $result->get_error_message();
+            } elseif ( null !== $result ) {
+                ++$processed;
+            }
         }
 
         $this->send_batch_json( true,
             array(
                 'page'      => $page,
-                'item'      => $item,
-                'count'     => count( $products ),
+                'item'      => $next_item - 1,
+                'next_item' => $next_item,
+                'count'     => $product_count,
                 'total'     => $total,
                 'processed' => $processed,
                 'skipped'   => $skipped,
@@ -4517,11 +4529,13 @@ final class TAQI_Life_Dropshipping {
                                     errors.forEach(function (message) { const li = document.createElement('li'); li.textContent = message; errorList.appendChild(li); });
                                     if (errorBox) errorBox.hidden = false;
                                 }
-                                bar.max = count || 1; bar.value = count ? item + 1 : 1;
-                                detail.textContent = 'Page ' + page + ' of ' + total + ' · product ' + Math.min(item + 1, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
+                                const responseNextItem = Number(result.data.next_item);
+                                const nextItem = Number.isFinite(responseNextItem) && responseNextItem > item ? responseNextItem : item + 1;
+                                bar.max = count || 1; bar.value = count ? Math.min(nextItem, count) : 1;
+                                detail.textContent = 'Page ' + page + ' of ' + total + ' · product ' + Math.min(nextItem, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
                                 if (errors.length) detail.title = errors.join('\n');
-                                if (!count || item + 1 >= count) break;
-                                item++; saveBatchResume(page, item);
+                                if (!count || nextItem >= count) break;
+                                item = nextItem; saveBatchResume(page, item);
                             }
                             if (batchCancelled) break;
                             if (page < total) saveBatchResume(page + 1, 0);
