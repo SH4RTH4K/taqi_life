@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TAQI LIFE Dropshipping
  * Description: Standalone Mohasagor reseller dropshipping catalog and product manager.
- * Version: 2.0.0
+ * Version: 2.1.0
  * Author: TAQI LIFE
  */
 
@@ -224,7 +224,7 @@ final class TAQI_Life_Dropshipping {
      */
     const BATCH_CHUNK_SIZE = 5;
 
-    const VERSION                       = '2.0.0';
+    const VERSION                       = '2.1.0';
     const OPTION_SETTINGS               = 'taqi_dropshipping_settings';
     const OPTION_LAST_TEST              = 'taqi_dropshipping_last_test';
     const OPTION_CATEGORY_MAP           = 'taqi_dropshipping_category_map';
@@ -1337,11 +1337,35 @@ final class TAQI_Life_Dropshipping {
         }
     }
 
-    private function resync_product( $product_id, $supplier_product, $api_page = 0, $skip_images = false ) {
+    private function resync_product( $product_id, $supplier_product, $api_page = 0, $skip_images = false, $sync_mode = 'full' ) {
         $supplier_id = $this->supplier_product_id( $supplier_product );
         $product     = $this->validate_linked_product( $product_id, $supplier_id, false );
         if ( is_wp_error( $product ) ) {
             return $product;
+        }
+
+        $sync_mode = in_array( $sync_mode, array( 'full', 'price', 'images' ), true ) ? $sync_mode : 'full';
+
+        // Image synchronization is deliberately isolated from supplier data.
+        // It must never change a saved price, stock value, category, or variation.
+        if ( 'images' === $sync_mode ) {
+            $image_sync = $this->sync_product_images( $product, $supplier_product, $product->get_name(), true, false );
+            $product->update_meta_data( '_taqi_last_image_sync_at', current_time( 'mysql' ) );
+            $product->update_meta_data( '_taqi_last_sync_at', current_time( 'mysql' ) );
+            $product->save();
+
+            return array(
+                'status'             => 'images_resynced',
+                'product_id'         => $product->get_id(),
+                'supplier_id'        => $supplier_id,
+                'updated_variations' => 0,
+                'image_sync'         => $image_sync,
+                'message'            => sprintf(
+                    'Images synchronized. %d supplier image(s) were detected and %d new image(s) were downloaded. Price and stock were not changed.',
+                    isset( $image_sync['supplier_urls'] ) ? absint( $image_sync['supplier_urls'] ) : 0,
+                    isset( $image_sync['downloaded'] ) ? absint( $image_sync['downloaded'] ) : 0
+                ),
+            );
         }
 
         $this->apply_category_mapping( $product, $supplier_product );
@@ -1420,11 +1444,15 @@ final class TAQI_Life_Dropshipping {
 
         $product->save();
 
-        // Safe image re-sync: keep local images and add any supplier images that are missing.
-        $image_sync = $this->sync_product_images( $product, $supplier_product, $product->get_name(), true, $skip_images );
+        // Price/data mode never invokes the downloader. Full mode remains for
+        // backwards-compatible single-product and re-link operations.
+        $images_skipped = $skip_images || 'price' === $sync_mode;
+        $image_sync     = $images_skipped
+            ? array( 'supplier_urls' => 0, 'downloaded' => 0, 'skipped' => true )
+            : $this->sync_product_images( $product, $supplier_product, $product->get_name(), true, false );
 
-        $message = $skip_images
-            ? 'Product re-synced (price, stock, categories, metadata refreshed). Images were skipped.'
+        $message = $images_skipped
+            ? 'Price/data synchronized (price, stock, categories and supplier metadata). Images were not changed.'
             : sprintf(
                 'Product re-synced. Supplier price, stock, mapped categories and metadata were refreshed. Local title/description/images were preserved, and %d supplier image(s) were detected with %d new download(s).',
                 isset( $image_sync['supplier_urls'] ) ? absint( $image_sync['supplier_urls'] ) : 0,
@@ -2783,7 +2811,7 @@ final class TAQI_Life_Dropshipping {
             'product_id'  => $product_id,
             'supplier_id' => $supplier_id,
             'type'        => $type,
-            'message'     => 'Imported successfully and linked for synchronization.' . ( $skip_images ? ' Images skipped — download them later via Re-sync.' : '' ),
+            'message'     => 'Imported successfully and linked for synchronization.' . ( $skip_images ? ' Images skipped — download them later with Sync Images.' : '' ),
         );
     }
 
@@ -4140,8 +4168,9 @@ final class TAQI_Life_Dropshipping {
                             $linked_map[ (string) $supplier_id ] = array( 'active' => (int) $result['product_id'] );
                         }
                     }
-                } elseif ( 'all_resync' === $action && $product_id ) {
-                    $results[] = $this->resync_product( $product_id, $product, $page );
+                } elseif ( in_array( $action, array( 'all_resync', 'all_resync_price', 'all_resync_images' ), true ) && $product_id ) {
+                    $sync_mode = 'all_resync_price' === $action ? 'price' : ( 'all_resync_images' === $action ? 'images' : 'full' );
+                    $results[] = $this->resync_product( $product_id, $product, $page, 'price' === $sync_mode, $sync_mode );
                 } elseif ( 'all_cancel' === $action && $product_id ) {
                     $results[] = $this->cancel_product_sync( $product_id, $supplier_id );
                 }
@@ -4174,7 +4203,7 @@ final class TAQI_Life_Dropshipping {
             }
         }
 
-        if ( in_array( $action, array( 'all_import', 'all_resync', 'all_cancel' ), true ) ) {
+        if ( in_array( $action, array( 'all_import', 'all_resync', 'all_resync_price', 'all_resync_images', 'all_cancel' ), true ) ) {
             return $this->handle_all_product_pages( $action, $last_page, $import_category_id, $import_category_path );
         }
 
@@ -4186,7 +4215,7 @@ final class TAQI_Life_Dropshipping {
             }
         }
 
-        if ( in_array( $action, array( 'bulk_resync', 'bulk_cancel' ), true ) ) {
+        if ( in_array( $action, array( 'bulk_resync', 'bulk_resync_price', 'bulk_resync_images', 'bulk_cancel' ), true ) ) {
             $selected = ! empty( $_POST['supplier_ids'] ) && is_array( $_POST['supplier_ids'] ) ? array_map( 'sanitize_text_field', wp_unslash( $_POST['supplier_ids'] ) ) : array();
             $selected = array_values( array_unique( array_filter( $selected, 'strlen' ) ) );
             if ( empty( $selected ) ) {
@@ -4198,12 +4227,13 @@ final class TAQI_Life_Dropshipping {
                     $results[] = new WP_Error( 'taqi_active_link_missing', 'No active synchronization was found for supplier product ' . $supplier_id . '.' );
                     continue;
                 }
-                if ( 'bulk_resync' === $action ) {
+                if ( in_array( $action, array( 'bulk_resync', 'bulk_resync_price', 'bulk_resync_images' ), true ) ) {
                     if ( ! isset( $product_map[ (string) $supplier_id ] ) ) {
                         $results[] = new WP_Error( 'taqi_product_not_on_page', 'Current supplier data for product ' . $supplier_id . ' was not found.' );
                         continue;
                     }
-                    $results[] = $this->resync_product( $product_id, $product_map[ (string) $supplier_id ], $api_page );
+                    $sync_mode = 'bulk_resync_price' === $action ? 'price' : ( 'bulk_resync_images' === $action ? 'images' : 'full' );
+                    $results[] = $this->resync_product( $product_id, $product_map[ (string) $supplier_id ], $api_page, 'price' === $sync_mode, $sync_mode );
                 } else {
                     $results[] = $this->cancel_product_sync( $product_id, $supplier_id );
                 }
@@ -4211,22 +4241,23 @@ final class TAQI_Life_Dropshipping {
             return $results;
         }
 
-        if ( in_array( $action, array( 'resync', 'cancel', 'relink', 'delete' ), true ) ) {
+        if ( in_array( $action, array( 'resync', 'resync_price', 'resync_images', 'cancel', 'relink', 'delete' ), true ) ) {
             $supplier_id = isset( $_POST['single_supplier_id'] ) ? sanitize_text_field( wp_unslash( $_POST['single_supplier_id'] ) ) : '';
             if ( '' === $supplier_id ) {
                 return array( new WP_Error( 'taqi_supplier_id_missing', 'Supplier product ID is required for this action.' ) );
             }
 
-            if ( ! isset( $product_map[ (string) $supplier_id ] ) && in_array( $action, array( 'resync', 'relink' ), true ) ) {
+            if ( ! isset( $product_map[ (string) $supplier_id ] ) && in_array( $action, array( 'resync', 'resync_price', 'resync_images', 'relink' ), true ) ) {
                 return array( new WP_Error( 'taqi_product_not_on_page', 'Current supplier data for product ' . $supplier_id . ' was not found on this API page. Refresh the page and try again.' ) );
             }
 
-            if ( 'resync' === $action ) {
+            if ( in_array( $action, array( 'resync', 'resync_price', 'resync_images' ), true ) ) {
                 $product_id = $this->find_imported_product_id( $supplier_id );
                 if ( ! $product_id ) {
                     return array( new WP_Error( 'taqi_active_link_missing', 'No actively linked WooCommerce product was found for supplier product ' . $supplier_id . '.' ) );
                 }
-                $results[] = $this->resync_product( $product_id, $product_map[ (string) $supplier_id ], $api_page );
+                $sync_mode = 'resync_price' === $action ? 'price' : ( 'resync_images' === $action ? 'images' : 'full' );
+                $results[] = $this->resync_product( $product_id, $product_map[ (string) $supplier_id ], $api_page, 'price' === $sync_mode, $sync_mode );
                 return $results;
             }
 
@@ -4299,6 +4330,54 @@ final class TAQI_Life_Dropshipping {
     }
 
     /**
+     * One durable supplier-catalog batch checkpoint is kept per administrator.
+     * User meta survives page reloads, browser changes, PHP timeouts, and local
+     * browser-storage cleanup.
+     */
+    private function get_catalog_batch_checkpoint() {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return array();
+        }
+
+        $checkpoint = get_user_meta( $user_id, '_taqi_catalog_batch_checkpoint', true );
+        if ( ! is_array( $checkpoint ) ) {
+            return array();
+        }
+
+        // Completed markers prevent a timed-out final response from processing
+        // the final item twice. They are no longer needed after seven days.
+        $updated = isset( $checkpoint['updated'] ) ? absint( $checkpoint['updated'] ) : 0;
+        if ( $updated && $updated < time() - WEEK_IN_SECONDS ) {
+            delete_user_meta( $user_id, '_taqi_catalog_batch_checkpoint' );
+            return array();
+        }
+
+        return $checkpoint;
+    }
+
+    private function save_catalog_batch_checkpoint( $checkpoint ) {
+        $user_id = get_current_user_id();
+        if ( ! $user_id || ! is_array( $checkpoint ) ) {
+            return;
+        }
+        $checkpoint['updated'] = time();
+        update_user_meta( $user_id, '_taqi_catalog_batch_checkpoint', $checkpoint );
+    }
+
+    private function clear_catalog_batch_checkpoint( $token = '' ) {
+        $user_id = get_current_user_id();
+        if ( ! $user_id ) {
+            return false;
+        }
+        $checkpoint = $this->get_catalog_batch_checkpoint();
+        if ( $token && ! empty( $checkpoint['token'] ) && ! hash_equals( (string) $checkpoint['token'], (string) $token ) ) {
+            return false;
+        }
+        return (bool) delete_user_meta( $user_id, '_taqi_catalog_batch_checkpoint' );
+    }
+
+    /**
      * Send a batch response without allowing notices, BOMs, or nested output
      * buffers to corrupt the JSON consumed by the admin screen.
      */
@@ -4327,6 +4406,13 @@ final class TAQI_Life_Dropshipping {
             $this->send_batch_json( false, array( 'message' => 'The security check failed. Refresh the page and try again.' ), 403 );
         }
 
+        $token = isset( $_POST['batch_token'] ) ? substr( preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) wp_unslash( $_POST['batch_token'] ) ), 0, 80 ) : '';
+        $checkpoint_command = isset( $_POST['checkpoint_command'] ) ? sanitize_key( wp_unslash( $_POST['checkpoint_command'] ) ) : '';
+        if ( 'cancel' === $checkpoint_command ) {
+            $this->clear_catalog_batch_checkpoint( $token );
+            $this->send_batch_json( true, array( 'cancelled' => true, 'message' => 'The saved supplier sync checkpoint was cancelled.' ) );
+        }
+
         $action = isset( $_POST['batch_action'] ) ? sanitize_key( wp_unslash( $_POST['batch_action'] ) ) : '';
         $import_category_id   = isset( $_POST['import_category_id'] ) ? absint( $_POST['import_category_id'] ) : 0;
         $import_category_path = isset( $_POST['import_category_path'] ) ? sanitize_text_field( wp_unslash( $_POST['import_category_path'] ) ) : '';
@@ -4343,20 +4429,91 @@ final class TAQI_Life_Dropshipping {
                 $import_category_id = (int) $matched_category->term_id;
             }
         }
-        $page   = isset( $_POST['batch_page'] ) ? max( 1, absint( $_POST['batch_page'] ) ) : 1;
-        $item   = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
-        $total  = isset( $_POST['batch_total'] ) ? min( 50, max( 1, absint( $_POST['batch_total'] ) ) ) : 1;
-        if ( ! in_array( $action, array( 'all_import', 'all_resync', 'all_cancel' ), true ) ) {
+        $page       = isset( $_POST['batch_page'] ) ? max( 1, absint( $_POST['batch_page'] ) ) : 1;
+        $item       = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
+        $start_page = isset( $_POST['batch_start'] ) ? max( 1, absint( $_POST['batch_start'] ) ) : $page;
+        $total      = isset( $_POST['batch_total'] ) ? min( 50, max( $start_page, absint( $_POST['batch_total'] ) ) ) : $start_page;
+        $valid_actions = array( 'all_import', 'all_resync', 'all_resync_price', 'all_resync_images', 'all_cancel' );
+        if ( ! in_array( $action, $valid_actions, true ) ) {
             $this->send_batch_json( false, array( 'message' => 'Invalid batch action.' ), 400 );
         }
+
+        $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
+        $sync_mode   = 'all_resync_price' === $action ? 'price' : ( 'all_resync_images' === $action ? 'images' : ( 'all_resync' === $action ? ( $skip_images ? 'price' : 'full' ) : '' ) );
+        if ( '' === $token ) {
+            $token = str_replace( '-', '', wp_generate_uuid4() );
+        }
+
+        $checkpoint = $this->get_catalog_batch_checkpoint();
+        $same_job   = ! empty( $checkpoint['token'] ) && hash_equals( (string) $checkpoint['token'], $token );
+        if ( $same_job && 'complete' === ( isset( $checkpoint['status'] ) ? $checkpoint['status'] : '' ) ) {
+            $this->send_batch_json(
+                true,
+                array(
+                    'done'       => true,
+                    'page_done'  => true,
+                    'processed'  => 0,
+                    'skipped'    => 0,
+                    'failed'     => 0,
+                    'checkpoint' => $checkpoint,
+                    'message'    => 'This batch already completed.',
+                )
+            );
+        }
+
+        if ( $same_job ) {
+            // The server cursor is authoritative. This prevents a retry after
+            // a lost response from processing an already completed product.
+            $action                   = isset( $checkpoint['batch_action'] ) ? sanitize_key( $checkpoint['batch_action'] ) : $action;
+            $sync_mode                = isset( $checkpoint['sync_mode'] ) ? sanitize_key( $checkpoint['sync_mode'] ) : $sync_mode;
+            $page                     = max( 1, absint( isset( $checkpoint['page'] ) ? $checkpoint['page'] : $page ) );
+            $item                     = max( 0, absint( isset( $checkpoint['item'] ) ? $checkpoint['item'] : $item ) );
+            $start_page               = max( 1, absint( isset( $checkpoint['start_page'] ) ? $checkpoint['start_page'] : $start_page ) );
+            $total                    = min( 50, max( $start_page, absint( isset( $checkpoint['end_page'] ) ? $checkpoint['end_page'] : $total ) ) );
+            $import_category_id       = absint( isset( $checkpoint['import_category_id'] ) ? $checkpoint['import_category_id'] : $import_category_id );
+            $import_category_path     = isset( $checkpoint['import_category_path'] ) ? sanitize_text_field( $checkpoint['import_category_path'] ) : $import_category_path;
+            $supplier_category_filter = isset( $checkpoint['supplier_category_filter'] ) ? sanitize_text_field( $checkpoint['supplier_category_filter'] ) : $supplier_category_filter;
+            $skip_images              = ! empty( $checkpoint['skip_images'] );
+        } else {
+            $checkpoint = array(
+                'token'                    => $token,
+                'batch_action'             => $action,
+                'sync_mode'                => $sync_mode,
+                'start_page'               => $start_page,
+                'end_page'                 => $total,
+                'page'                     => $page,
+                'item'                     => $item,
+                'import_category_id'       => $import_category_id,
+                'import_category_path'     => $import_category_path,
+                'supplier_category_filter' => $supplier_category_filter,
+                'skip_images'              => $skip_images,
+                'processed'                => 0,
+                'skipped'                  => 0,
+                'failed'                   => 0,
+                'errors'                   => array(),
+                'status'                   => 'running',
+            );
+        }
+
+        // Save the current item before expensive API/image work. If PHP is
+        // terminated, this exact item remains the safe resume point.
+        $checkpoint['status'] = 'running';
+        $checkpoint['page']   = $page;
+        $checkpoint['item']   = $item;
+        $this->save_catalog_batch_checkpoint( $checkpoint );
 
         set_time_limit( 120 );
         $data = $this->api_request_products( $page, $supplier_category_filter );
         if ( is_wp_error( $data ) ) {
-            // A supplier page can fail independently. Return a successful batch
-            // response so the browser advances to the next page and reports the
-            // failure in the final summary instead of aborting the whole batch.
-            $this->send_batch_json( true, array( 'page' => $page, 'item' => $item, 'count' => 0, 'total' => $total, 'processed' => 0, 'skipped' => 0, 'failed' => 1, 'errors' => array( 'Page ' . $page . ': ' . $data->get_error_message() ), 'total_pages' => $total, 'page_done' => true, 'done' => $page >= $total ) );
+            $error_message = 'Page ' . $page . ': ' . $data->get_error_message();
+            // A supplier/API outage is a resumable technical interruption, not
+            // a failed product. Keep the cursor on this page and stop the loop.
+            $checkpoint['errors'] = array_slice( array_merge( isset( $checkpoint['errors'] ) ? (array) $checkpoint['errors'] : array(), array( $error_message ) ), -20 );
+            $checkpoint['page']   = $page;
+            $checkpoint['item']   = $item;
+            $checkpoint['status'] = 'running';
+            $this->save_catalog_batch_checkpoint( $checkpoint );
+            $this->send_batch_json( false, array( 'message' => $error_message . ' The batch was paused at the same position.', 'checkpoint' => $checkpoint ), 503 );
         }
 
         $products = $this->extract_products( $data );
@@ -4368,22 +4525,31 @@ final class TAQI_Life_Dropshipping {
             } ) );
         }
         if ( ! isset( $products[ $item ] ) ) {
-            $this->send_batch_json( true, array( 'page' => $page, 'item' => $item, 'count' => count( $products ), 'page_done' => true, 'done' => $page >= $total ) );
+            $done = $page >= $total;
+            $checkpoint['page']   = $done ? $page : $page + 1;
+            $checkpoint['item']   = 0;
+            $checkpoint['status'] = $done ? 'complete' : 'running';
+            $this->save_catalog_batch_checkpoint( $checkpoint );
+            $this->send_batch_json( true, array( 'page' => $page, 'next_page' => $checkpoint['page'], 'next_item' => 0, 'item' => $item, 'count' => count( $products ), 'processed' => 0, 'skipped' => 0, 'failed' => 0, 'page_done' => true, 'done' => $done, 'checkpoint' => $checkpoint ) );
         }
 
-        $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
         // Image sideloading can involve several remote downloads and image
         // transformations. Keep those requests to one product so shared
         // hosting does not terminate the request with HTTP 503. When images
         // are skipped, use the larger chunk to reduce AJAX overhead.
-        $chunk_size    = $skip_images ? self::BATCH_CHUNK_SIZE : 1;
+        $downloads_images = ( 'all_import' === $action && ! $skip_images ) || 'images' === $sync_mode || ( 'all_resync' === $action && ! $skip_images );
+        $chunk_size    = $downloads_images ? 1 : self::BATCH_CHUNK_SIZE;
         $product_count = count( $products );
         $next_item     = min( $product_count, $item + $chunk_size );
-        $linked_map    = in_array( $action, array( 'all_resync', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
+        $linked_map    = in_array( $action, array( 'all_resync', 'all_resync_price', 'all_resync_images', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
         $processed  = 0;
         $skipped    = 0;
         $failed     = 0;
         $errors     = array();
+        $checkpoint_base_processed = absint( isset( $checkpoint['processed'] ) ? $checkpoint['processed'] : 0 );
+        $checkpoint_base_skipped   = absint( isset( $checkpoint['skipped'] ) ? $checkpoint['skipped'] : 0 );
+        $checkpoint_base_failed    = absint( isset( $checkpoint['failed'] ) ? $checkpoint['failed'] : 0 );
+        $checkpoint_base_errors    = isset( $checkpoint['errors'] ) ? (array) $checkpoint['errors'] : array();
         for ( $batch_item = $item; $batch_item < $next_item; ++$batch_item ) {
             $product     = $products[ $batch_item ];
             $supplier_id = $this->supplier_product_id( $product );
@@ -4403,8 +4569,8 @@ final class TAQI_Life_Dropshipping {
                     if ( ! $product_id ) {
                         ++$skipped;
                     } else {
-                        $result = 'all_resync' === $action
-                            ? $this->resync_product( $product_id, $product, $page, $skip_images )
+                        $result = in_array( $action, array( 'all_resync', 'all_resync_price', 'all_resync_images' ), true )
+                            ? $this->resync_product( $product_id, $product, $page, $skip_images, $sync_mode )
                             : $this->cancel_product_sync( $product_id, $supplier_id );
                     }
                 }
@@ -4418,21 +4584,49 @@ final class TAQI_Life_Dropshipping {
             } elseif ( null !== $result ) {
                 ++$processed;
             }
+
+            // Advance the durable cursor after every product, not merely at
+            // the end of a multi-product request. A mid-request PHP failure
+            // therefore resumes at the first unfinished supplier product.
+            $checkpoint['page']      = $page;
+            $checkpoint['item']      = $batch_item + 1;
+            $checkpoint['processed'] = $checkpoint_base_processed + $processed;
+            $checkpoint['skipped']   = $checkpoint_base_skipped + $skipped;
+            $checkpoint['failed']    = $checkpoint_base_failed + $failed;
+            $checkpoint['errors']    = array_slice( array_merge( $checkpoint_base_errors, $errors ), -20 );
+            $this->save_catalog_batch_checkpoint( $checkpoint );
         }
+
+        $supplier_last_page       = max( 1, $this->extract_last_page( $data ) );
+        $total                    = min( $total, $supplier_last_page );
+        $checkpoint['end_page']   = $total;
+        $checkpoint['processed']  = $checkpoint_base_processed + $processed;
+        $checkpoint['skipped']    = $checkpoint_base_skipped + $skipped;
+        $checkpoint['failed']     = $checkpoint_base_failed + $failed;
+        $checkpoint['errors']     = array_slice( array_merge( $checkpoint_base_errors, $errors ), -20 );
+        $page_done              = $next_item >= $product_count;
+        $done                   = $page_done && $page >= $total;
+        $checkpoint['page']     = $done ? $page : ( $page_done ? $page + 1 : $page );
+        $checkpoint['item']     = $page_done ? 0 : $next_item;
+        $checkpoint['status']   = $done ? 'complete' : 'running';
+        $this->save_catalog_batch_checkpoint( $checkpoint );
 
         $this->send_batch_json( true,
             array(
                 'page'      => $page,
                 'item'      => $next_item - 1,
                 'next_item' => $next_item,
+                'next_page' => $checkpoint['page'],
                 'count'     => $product_count,
                 'total'     => $total,
                 'processed' => $processed,
                 'skipped'   => $skipped,
                 'failed'    => $failed,
                 'errors'    => $errors,
-                'total_pages' => max( 1, $this->extract_last_page( $data ) ),
-                'done'      => $page >= $total,
+                'total_pages' => $supplier_last_page,
+                'page_done' => $page_done,
+                'done'      => $done,
+                'checkpoint' => $checkpoint,
             )
         );
     }
@@ -5171,6 +5365,9 @@ final class TAQI_Life_Dropshipping {
                 .taqi-products-screen .taqi-summary span{display:inline-flex;gap:5px;align-items:center;background:#f6f7f7;border:1px solid #dcdcde;border-radius:999px;padding:5px 10px;color:#50575e;font-size:12px}
                 .taqi-products-screen .taqi-import-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#f0f6fc;border:1px solid #c5d9ed;border-bottom:0;border-radius:8px 8px 0 0;padding:12px}
                 .taqi-products-screen .taqi-import-bar .description{color:#50575e}
+                .taqi-products-screen .taqi-resume-notice{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px;padding:10px 12px;border-left:4px solid #dba617;background:#fff8e5}
+                .taqi-products-screen .taqi-resume-notice[hidden]{display:none}
+                .taqi-products-screen .taqi-resume-actions{margin-left:auto;display:flex;gap:8px}
                 .taqi-products-screen .taqi-batch-progress{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fff;border:1px solid #c3c4c7;border-top:0;padding:10px 12px;margin-bottom:14px}
                 .taqi-products-screen .taqi-batch-progress progress{width:220px;height:16px}
                 .taqi-products-screen .taqi-batch-cancel{margin-left:auto;color:#b32d2e;border-color:#d63638}
@@ -5205,6 +5402,10 @@ final class TAQI_Life_Dropshipping {
             $products  = $this->extract_products( $data );
             $last_page = max( 1, $this->extract_last_page( $data ) );
             $batch_last_page = $last_page;
+            $batch_checkpoint = $this->get_catalog_batch_checkpoint();
+            if ( empty( $batch_checkpoint ) || 'running' !== ( isset( $batch_checkpoint['status'] ) ? $batch_checkpoint['status'] : '' ) ) {
+                $batch_checkpoint = array();
+            }
 
             if ( $category_filter ) {
                 $category_cache_key = 'taqi_category_catalog_' . md5( $this->supplier_key() . '|' . strtolower( trim( $category_filter ) ) );
@@ -5330,13 +5531,18 @@ final class TAQI_Life_Dropshipping {
 
             <div class="taqi-summary"><span><strong>API page</strong> <?php echo esc_html( $api_page ); ?> / <?php echo esc_html( $last_page ); ?></span><span><strong>Products shown</strong> <?php echo esc_html( count( $products ) ); ?></span><?php if ( $search ) : ?><span><strong>Search</strong> <?php echo esc_html( $search ); ?></span><?php endif; ?><?php if ( $category_filter ) : ?><span><strong>Supplier category</strong> <?php echo esc_html( $category_filter ); ?></span><?php endif; ?></div>
 
+            <div id="taqi-batch-resume-notice" class="taqi-resume-notice" <?php echo $batch_checkpoint ? '' : 'hidden'; ?>>
+                <span><strong>Interrupted sync is available.</strong> <span id="taqi-batch-resume-detail"></span></span>
+                <span class="taqi-resume-actions"><button type="button" id="taqi-batch-resume" class="button button-primary">Resume from saved position</button><button type="button" id="taqi-batch-discard" class="button">Discard saved sync</button></span>
+            </div>
+
             <form method="post" id="taqi-product-import-form">
                 <?php wp_nonce_field( 'taqi_import_products_' . $api_page, 'taqi_import_nonce' ); ?>
                 <input type="hidden" name="taqi_import_action" id="taqi_import_action" value="bulk">
                 <input type="hidden" name="single_supplier_id" id="single_supplier_id" value="">
                 <input type="hidden" name="supplier_category_filter" id="supplier_category_filter" value="">
                 <input type="hidden" name="taqi_import_category_id" id="taqi_import_category_id" value="0">
-                <div class="taqi-import-bar"><?php if ( ! $category_filter ) : ?><button type="submit" class="button button-primary" onclick="document.getElementById('taqi_import_action').value='bulk';">Import Selected Page</button><?php endif; ?><button type="submit" class="button" data-bulk-action="bulk_resync">Re-sync Selected</button><button type="submit" class="button" data-bulk-action="bulk_cancel" data-confirm="Cancel synchronization for all selected linked products?">Cancel Selected</button><button type="submit" class="button button-primary" data-all-action="all_import"><?php if ( $category_filter ) : ?>Import Filtered Products<?php else : ?>Import All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_resync"><?php if ( $category_filter ) : ?>Re-sync Filtered Products<?php else : ?>Re-sync All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_cancel" data-confirm="Cancel synchronization across all <?php echo esc_attr( $batch_last_page ); ?> pages?"><?php if ( $category_filter ) : ?>Cancel Filtered Products<?php else : ?>Cancel All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><label title="Skipping images makes batch operations 5–50× faster. You can download images later by running Re-sync on imported products." style="white-space:nowrap;font-weight:600;cursor:pointer;"><input type="checkbox" id="taqi-skip-images-checkbox" style="margin-right:4px;">⚡ Skip images (faster)</label><span class="description">Only products matching the selected category are processed.</span></div>
+                <div class="taqi-import-bar"><?php if ( ! $category_filter ) : ?><button type="submit" class="button button-primary" onclick="document.getElementById('taqi_import_action').value='bulk';">Import Selected Page</button><?php endif; ?><button type="submit" class="button" data-bulk-action="bulk_resync_price">Sync Price/Data Selected</button><button type="submit" class="button" data-bulk-action="bulk_resync_images">Sync Images Selected</button><button type="submit" class="button" data-bulk-action="bulk_cancel" data-confirm="Cancel synchronization for all selected linked products?">Cancel Selected</button><button type="submit" class="button button-primary" data-all-action="all_import"><?php if ( $category_filter ) : ?>Import Filtered Products<?php else : ?>Import All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_resync_price"><?php if ( $category_filter ) : ?>Sync Price/Data for Filtered Products<?php else : ?>Sync Price/Data All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_resync_images"><?php if ( $category_filter ) : ?>Sync Images for Filtered Products<?php else : ?>Sync Images All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><button type="submit" class="button" data-all-action="all_cancel" data-confirm="Cancel synchronization across all <?php echo esc_attr( $batch_last_page ); ?> pages?"><?php if ( $category_filter ) : ?>Cancel Filtered Products<?php else : ?>Cancel All <?php echo esc_html( $batch_last_page ); ?> Pages<?php endif; ?></button><label title="This applies only to import. Price/Data Sync and Image Sync are now separate." style="white-space:nowrap;font-weight:600;cursor:pointer;"><input type="checkbox" id="taqi-skip-images-checkbox" style="margin-right:4px;">Import without images</label><span class="description">Price/Data Sync never downloads images. Image Sync never changes prices.</span></div>
                 <div id="taqi-batch-progress" class="taqi-batch-progress" hidden><strong id="taqi-batch-label">Preparing batch…</strong><progress id="taqi-batch-bar" value="0" max="<?php echo esc_attr( $batch_last_page ); ?>"></progress><span id="taqi-batch-detail"></span><button type="button" id="taqi-batch-cancel" class="button taqi-batch-cancel">Cancel Batch</button></div>
 
                 <div id="taqi-batch-errors" class="notice notice-error inline" hidden style="margin:0 0 14px;"><p><strong>Failure reasons</strong></p><ul id="taqi-batch-error-list" style="margin-left:20px;"></ul></div>
@@ -5383,7 +5589,8 @@ final class TAQI_Life_Dropshipping {
                                     <button type="button" class="button taqi-toggle-details" data-target="<?php echo esc_attr( $detail_id ); ?>">View</button>
                                     <?php if ( $imported_id ) : ?>
                                         <a class="button" href="<?php echo esc_url( get_edit_post_link( $imported_id ) ); ?>">Edit</a>
-                                        <button type="submit" class="button button-primary taqi-product-action" data-action="resync" data-id="<?php echo esc_attr( $supplier_id ); ?>">Re-sync</button>
+                                        <button type="submit" class="button button-primary taqi-product-action" data-action="resync_price" data-id="<?php echo esc_attr( $supplier_id ); ?>">Sync Price/Data</button>
+                                        <button type="submit" class="button taqi-product-action" data-action="resync_images" data-id="<?php echo esc_attr( $supplier_id ); ?>">Sync Images</button>
                                         <button type="submit" class="button taqi-product-action" data-action="cancel" data-id="<?php echo esc_attr( $supplier_id ); ?>" data-confirm="Cancel synchronization? The WooCommerce product will remain, but supplier updates will stop until you re-link it.">Cancel Sync</button>
                                         <button type="submit" class="button-link-delete taqi-product-action" style="margin-left:6px;" data-action="delete" data-id="<?php echo esc_attr( $supplier_id ); ?>" data-confirm="Permanently delete this imported WooCommerce product? This cannot be undone. Supplier API data will NOT be deleted.">Delete</button>
                                     <?php elseif ( $cancelled_id ) : ?>
@@ -5441,8 +5648,8 @@ final class TAQI_Life_Dropshipping {
                 const end = endPageControl && endPageControl.value ? Math.max(start, Math.min(50, Number(endPageControl.value))) : <?php echo absint( $batch_last_page ); ?>;
                 const filteredMode = <?php echo $category_filter ? 'true' : 'false'; ?>;
                 const labels = filteredMode
-                    ? {all_import: 'Import Filtered Products', all_resync: 'Re-sync Filtered Products', all_cancel: 'Cancel Filtered Products'}
-                    : {all_import: 'Import All ', all_resync: 'Re-sync All ', all_cancel: 'Cancel All '};
+                    ? {all_import: 'Import Filtered Products', all_resync_price: 'Sync Price/Data for Filtered Products', all_resync_images: 'Sync Images for Filtered Products', all_cancel: 'Cancel Filtered Products'}
+                    : {all_import: 'Import All ', all_resync_price: 'Sync Price/Data All ', all_resync_images: 'Sync Images All ', all_cancel: 'Cancel All '};
                 document.querySelectorAll('[data-all-action]').forEach(function (button) {
                     const action = button.dataset.allAction;
                     if (labels[action]) button.textContent = filteredMode ? labels[action] : labels[action] + (start === end ? 'Page ' + start : 'Pages ' + start + '-' + end);
@@ -5512,144 +5719,254 @@ final class TAQI_Life_Dropshipping {
                     document.getElementById('taqi_import_action').value = btn.dataset.bulkAction;
                 });
             });
-            document.querySelectorAll('[data-all-action]').forEach(function (btn) {
-                btn.addEventListener('click', async function (event) {
-                    event.preventDefault();
-                    if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) {
-                        return;
+            const batchNonce = '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>';
+            const progress = document.getElementById('taqi-batch-progress');
+            const bar = document.getElementById('taqi-batch-bar');
+            const label = document.getElementById('taqi-batch-label');
+            const detail = document.getElementById('taqi-batch-detail');
+            const errorBox = document.getElementById('taqi-batch-errors');
+            const errorList = document.getElementById('taqi-batch-error-list');
+            const cancelButton = document.getElementById('taqi-batch-cancel');
+            const resumeNotice = document.getElementById('taqi-batch-resume-notice');
+            const resumeDetail = document.getElementById('taqi-batch-resume-detail');
+            const resumeButton = document.getElementById('taqi-batch-resume');
+            const discardButton = document.getElementById('taqi-batch-discard');
+            const batchButtons = document.querySelectorAll('[data-all-action], [data-bulk-action], .taqi-import-bar button, #taqi-batch-resume, #taqi-batch-discard');
+            let serverCheckpoint = <?php echo wp_json_encode( $batch_checkpoint ? $batch_checkpoint : null ); ?>;
+            let batchRunning = false;
+            let batchCancelled = false;
+
+            function batchActionLabel(action) {
+                const labels = {
+                    all_import: 'Import',
+                    all_resync: 'Full re-sync',
+                    all_resync_price: 'Price/Data Sync',
+                    all_resync_images: 'Image Sync',
+                    all_cancel: 'Cancel Synchronization'
+                };
+                return labels[action] || 'Supplier Sync';
+            }
+
+            function showResumeNotice(checkpoint) {
+                if (!resumeNotice) return;
+                if (!checkpoint || checkpoint.status !== 'running') {
+                    resumeNotice.hidden = true;
+                    return;
+                }
+                serverCheckpoint = checkpoint;
+                resumeNotice.hidden = false;
+                if (resumeDetail) {
+                    resumeDetail.textContent = batchActionLabel(checkpoint.batch_action) + ' stopped at page ' + Number(checkpoint.page || 1) + ', next product ' + (Number(checkpoint.item || 0) + 1) + '. Completed: ' + Number(checkpoint.processed || 0) + '; skipped: ' + Number(checkpoint.skipped || 0) + '; failed: ' + Number(checkpoint.failed || 0) + '.';
+                }
+            }
+
+            async function readBatchResponse(response) {
+                const raw = (await response.text()).replace(/^\uFEFF/, '').trim();
+                const firewallMessage = 'The hosting firewall blocked this batch request. Ask your host to allowlist /wp-admin/admin-ajax.php for logged-in administrator requests or disable Imunify360 bot protection for this endpoint.';
+                if (/One moment, please|request is being verified|Imunify360|bot-protection|IPs used for automation/i.test(raw)) throw new Error(firewallMessage);
+                if (/502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i.test(raw)) throw new Error('The hosting server stopped this batch request because it took too long or was temporarily unavailable.');
+                let result;
+                try {
+                    result = JSON.parse(raw);
+                    if (typeof result === 'string') result = JSON.parse(result);
+                } catch (parseError) {
+                    const preview = raw.replace(/\s+/g, ' ').slice(0, 240);
+                    throw new Error('The server returned invalid JSON' + (preview ? ': ' + preview : '.'));
+                }
+                if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('The server returned an unexpected batch response.');
+                if (typeof result.message === 'string' && /Imunify360|bot-protection|automation/i.test(result.message)) throw new Error(firewallMessage);
+                return result;
+            }
+
+            function newBatchToken() {
+                if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID().replace(/-/g, '');
+                return String(Date.now()) + String(Math.random()).replace(/\D/g, '');
+            }
+
+            async function cancelCheckpoint(token) {
+                const body = new URLSearchParams({
+                    action: 'taqi_process_all_pages',
+                    checkpoint_command: 'cancel',
+                    batch_token: token || '',
+                    nonce: batchNonce
+                });
+                const response = await fetch(ajaxurl, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest'},
+                    body: body
+                });
+                const result = await readBatchResponse(response);
+                if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Could not cancel the saved checkpoint.');
+                serverCheckpoint = null;
+                showResumeNotice(null);
+            }
+
+            async function runBatch(button, checkpoint) {
+                if (batchRunning) return;
+                batchRunning = true;
+                batchCancelled = false;
+                const requestedStart = startPageControl && startPageControl.value ? Math.max(1, Math.min(50, Number(startPageControl.value))) : 1;
+                const requestedEnd = endPageControl && endPageControl.value ? Math.max(requestedStart, Math.min(50, Number(endPageControl.value))) : <?php echo absint( $batch_last_page ); ?>;
+                const resuming = checkpoint && checkpoint.status === 'running';
+                const config = resuming ? checkpoint : {
+                    token: newBatchToken(),
+                    batch_action: button.dataset.allAction,
+                    start_page: requestedStart,
+                    end_page: requestedEnd,
+                    page: requestedStart,
+                    item: 0,
+                    import_category_id: (document.querySelector('[name="taqi_import_category_id"]') || {}).value || '0',
+                    import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
+                    supplier_category_filter: (document.querySelector('[name="supplier_category"]') || {}).value || '',
+                    skip_images: button.dataset.allAction === 'all_import' && !!(document.getElementById('taqi-skip-images-checkbox') || {}).checked,
+                    processed: 0,
+                    skipped: 0,
+                    failed: 0,
+                    errors: []
+                };
+                let page = Math.max(1, Number(config.page || config.start_page || 1));
+                let item = Math.max(0, Number(config.item || 0));
+                let total = Math.max(page, Number(config.end_page || requestedEnd));
+                let processed = Number(config.processed || 0);
+                let skipped = Number(config.skipped || 0);
+                let failed = Number(config.failed || 0);
+                let errors = Array.isArray(config.errors) ? config.errors.slice() : [];
+                let lastCheckpoint = config;
+
+                progress.hidden = false;
+                bar.value = 0;
+                label.textContent = (resuming ? 'Resuming ' : 'Processing ') + batchActionLabel(config.batch_action) + '…';
+                detail.textContent = 'Starting at page ' + page + ', product ' + (item + 1) + '…';
+                showResumeNotice(null);
+                batchButtons.forEach(function (control) { control.disabled = true; });
+                cancelButton.disabled = false;
+                cancelButton.hidden = false;
+                cancelButton.onclick = function () {
+                    batchCancelled = true;
+                    cancelButton.disabled = true;
+                    label.textContent = 'Cancelling after the current product…';
+                };
+
+                try {
+                    while (page <= total && !batchCancelled) {
+                        const body = new URLSearchParams({
+                            action: 'taqi_process_all_pages',
+                            batch_action: config.batch_action,
+                            batch_token: config.token,
+                            batch_start: String(config.start_page || requestedStart),
+                            batch_page: String(page),
+                            batch_item: String(item),
+                            batch_total: String(total),
+                            import_category_id: String(config.import_category_id || '0'),
+                            import_category_path: config.import_category_path || '',
+                            supplier_category_filter: config.supplier_category_filter || '',
+                            skip_images: config.skip_images ? 'true' : 'false',
+                            nonce: batchNonce
+                        });
+                        const response = await fetch(ajaxurl, {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: {'Accept': 'application/json, text/javascript, */*; q=0.01', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest'},
+                            body: body
+                        });
+                        const result = await readBatchResponse(response);
+                        if (!response.ok && result.success !== false) throw new Error('Batch request failed with HTTP ' + response.status + '.');
+                        if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Batch operation failed.');
+
+                        const data = result.data || {};
+                        const currentPage = page;
+                        const count = Number(data.count || 0);
+                        const responseNextItem = Number(data.next_item || 0);
+                        if (data.checkpoint && typeof data.checkpoint === 'object') {
+                            lastCheckpoint = data.checkpoint;
+                            serverCheckpoint = data.checkpoint;
+                            processed = Number(data.checkpoint.processed || 0);
+                            skipped = Number(data.checkpoint.skipped || 0);
+                            failed = Number(data.checkpoint.failed || 0);
+                            errors = Array.isArray(data.checkpoint.errors) ? data.checkpoint.errors.slice() : errors;
+                            total = Number(data.checkpoint.end_page || total);
+                            page = Number(data.checkpoint.page || page);
+                            item = Number(data.checkpoint.item || 0);
+                        } else {
+                            processed += Number(data.processed || 0);
+                            skipped += Number(data.skipped || 0);
+                            failed += Number(data.failed || 0);
+                            if (Array.isArray(data.errors)) errors = errors.concat(data.errors);
+                            page = Number(data.next_page || (data.page_done ? currentPage + 1 : currentPage));
+                            item = data.page_done ? 0 : responseNextItem;
+                        }
+
+                        if (errorList && errors.length) {
+                            errorList.innerHTML = '';
+                            errors.forEach(function (message) { const li = document.createElement('li'); li.textContent = message; errorList.appendChild(li); });
+                            if (errorBox) errorBox.hidden = false;
+                        }
+                        bar.max = count || 1;
+                        bar.value = count ? Math.min(responseNextItem, count) : 1;
+                        detail.textContent = 'Page ' + currentPage + ' of ' + total + ' · product ' + Math.min(responseNextItem, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
+                        if (errors.length) detail.title = errors.join('\n');
+                        if (data.done || (lastCheckpoint && lastCheckpoint.status === 'complete')) break;
                     }
-                    const progress = document.getElementById('taqi-batch-progress');
-                    const bar = document.getElementById('taqi-batch-bar');
-                    const label = document.getElementById('taqi-batch-label');
-                    const detail = document.getElementById('taqi-batch-detail');
-                    const errorBox = document.getElementById('taqi-batch-errors');
-                    const errorList = document.getElementById('taqi-batch-error-list');
-                    const cancelButton = document.getElementById('taqi-batch-cancel');
-                    const buttons = document.querySelectorAll('[data-all-action], [data-bulk-action], .taqi-import-bar button');
-                    async function readBatchResponse(response) {
-                        const raw = (await response.text()).replace(/^\uFEFF/, '').trim();
-                        const firewallMessage = 'The hosting firewall blocked this batch request. Ask your host to allowlist /wp-admin/admin-ajax.php for logged-in administrator requests or disable Imunify360 bot protection for this endpoint.';
-                        if (/One moment, please|request is being verified|Imunify360|bot-protection|IPs used for automation/i.test(raw)) {
-                            throw new Error(firewallMessage);
-                        }
-                        if (/502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i.test(raw)) {
-                            throw new Error('The hosting server stopped this batch request because it took too long or was temporarily unavailable.');
-                        }
-                        let result;
+
+                    if (batchCancelled) {
+                        await cancelCheckpoint(config.token);
+                        label.textContent = 'Batch operation cancelled.';
+                        detail.textContent = 'The saved checkpoint was removed. Start a new batch whenever you are ready.';
+                    } else {
+                        serverCheckpoint = null;
+                        showResumeNotice(null);
+                        label.textContent = failed ? 'Batch operation completed with errors; failed items were skipped.' : 'Batch operation completed.';
+                    }
+                } catch (error) {
+                    if (batchCancelled) {
                         try {
-                            result = JSON.parse(raw);
-                            // Some caching/security layers can JSON-encode an already
-                            // encoded response. Accept that harmless wrapper too.
-                            if (typeof result === 'string') result = JSON.parse(result);
-                        } catch (parseError) {
-                            const preview = raw.replace(/\s+/g, ' ').slice(0, 240);
-                            throw new Error('The server returned invalid JSON' + (preview ? ': ' + preview : '.'));
-                        }
-                        if (!result || typeof result !== 'object' || Array.isArray(result)) {
-                            throw new Error('The server returned an unexpected batch response.');
-                        }
-                        if (typeof result.message === 'string' && /Imunify360|bot-protection|automation/i.test(result.message)) {
-                            throw new Error(firewallMessage);
-                        }
-                        return result;
-                    }
-                    const requestedStart = startPageControl && startPageControl.value ? Math.max(1, Math.min(50, Number(startPageControl.value))) : 1;
-                    const requestedEnd = endPageControl && endPageControl.value ? Math.max(requestedStart, Math.min(50, Number(endPageControl.value))) : <?php echo absint( $batch_last_page ); ?>;
-                    let total = requestedEnd;
-                    const resumeKey = 'taqi_batch_resume_' + btn.dataset.allAction + '_' + requestedStart + '_' + requestedEnd;
-                    let resume = null, batchCancelled = false;
-                    try { resume = JSON.parse(localStorage.getItem(resumeKey) || 'null'); } catch (ignore) {}
-                    let startPage = requestedStart, startItem = 0;
-                    if (resume && resume.page && typeof resume.item === 'number') {
-                        if (window.confirm('Resume this batch from page ' + resume.page + ', product ' + (resume.item + 1) + '?')) {
-                            startPage = Number(resume.page); startItem = Number(resume.item);
-                        } else {
-                            localStorage.removeItem(resumeKey);
-                        }
-                    }
-                    let processed = 0, skipped = 0, failed = 0, errors = [];
-                    const saveBatchResume = function (page, item) {
-                        localStorage.setItem(resumeKey, JSON.stringify({
-                            page: Number(page),
-                            item: Number(item),
-                            total: Number(total),
-                            updated: Date.now()
-                        }));
-                    };
-                    progress.hidden = false; bar.value = 0; label.textContent = 'Processing ' + btn.textContent.trim() + '…';
-                    buttons.forEach(function (item) { item.disabled = true; });
-                    cancelButton.disabled = false; cancelButton.hidden = false;
-                    cancelButton.onclick = function () { batchCancelled = true; cancelButton.disabled = true; label.textContent = 'Stopping after current product…'; };
-                    try {
-                        for (let page = startPage; page <= total; page++) {
-                            let item = page === startPage ? startItem : 0, count = 0;
-                            while (true) {
-                                if (batchCancelled) break;
-                                const skipImagesCheckbox = document.getElementById('taqi-skip-images-checkbox');
-                                const body = new URLSearchParams({
-                                    action: 'taqi_process_all_pages',
-                                    batch_action: btn.dataset.allAction,
-                                    batch_page: String(page),
-                                    batch_item: String(item),
-                                    batch_total: String(total),
-                                    import_category_id: (document.querySelector('[name="taqi_import_category_id"]') || {}).value || '0',
-                                    import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
-                                    supplier_category_filter: (document.querySelector('[name="supplier_category"]') || {}).value || '',
-                                    skip_images: (skipImagesCheckbox && skipImagesCheckbox.checked) ? 'true' : 'false',
-                                    nonce: '<?php echo esc_js( wp_create_nonce( 'taqi_all_pages_ajax' ) ); ?>'
-                                });
-                                // Save before the request so a timeout, firewall
-                                // challenge, tab close, or network interruption
-                                // resumes this exact product on the next click.
-                                saveBatchResume(page, item);
-                                const response = await fetch(ajaxurl, {
-                                    method: 'POST',
-                                    credentials: 'same-origin',
-                                    headers: {
-                                        'Accept': 'application/json, text/javascript, */*; q=0.01',
-                                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                                        'X-Requested-With': 'XMLHttpRequest'
-                                    },
-                                    body: body
-                                });
-                                const result = await readBatchResponse(response);
-                                if (!response.ok && result.success !== false) throw new Error('Batch request failed with HTTP ' + response.status + '.');
-                                if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Batch operation failed.');
-                                count = Number(result.data.count || 0);
-                                if (result.data.total_pages) total = Math.min(total, Number(result.data.total_pages));
-                                processed += Number(result.data.processed || 0); skipped += Number(result.data.skipped || 0); failed += Number(result.data.failed || 0);
-                                if (Array.isArray(result.data.errors)) errors = errors.concat(result.data.errors);
-                                if (errorList && errors.length) {
-                                    errorList.innerHTML = '';
-                                    errors.forEach(function (message) { const li = document.createElement('li'); li.textContent = message; errorList.appendChild(li); });
-                                    if (errorBox) errorBox.hidden = false;
-                                }
-                                const responseNextItem = Number(result.data.next_item);
-                                const nextItem = Number.isFinite(responseNextItem) && responseNextItem > item ? responseNextItem : item + 1;
-                                bar.max = count || 1; bar.value = count ? Math.min(nextItem, count) : 1;
-                                detail.textContent = 'Page ' + page + ' of ' + total + ' · product ' + Math.min(nextItem, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
-                                if (errors.length) detail.title = errors.join('\n');
-                                if (!count || nextItem >= count) break;
-                                item = nextItem; saveBatchResume(page, item);
+                            await cancelCheckpoint(config.token);
+                            label.textContent = 'Batch operation cancelled.';
+                            detail.textContent = 'The saved checkpoint was removed.';
+                        } catch (cancelError) {
+                            label.textContent = 'Cancellation could not be confirmed';
+                            detail.textContent = cancelError.message + ' Refresh the page to check the saved position.';
+                            if (lastCheckpoint) {
+                                lastCheckpoint.status = 'running';
+                                showResumeNotice(lastCheckpoint);
                             }
-                            if (batchCancelled) break;
-                            if (page < total) saveBatchResume(page + 1, 0);
                         }
-                        if (batchCancelled) {
-                            label.textContent = 'Batch operation cancelled.'; detail.textContent += ' Resume is available from the next product.';
-                        } else {
-                            localStorage.removeItem(resumeKey); label.textContent = failed ? 'Batch operation completed with errors; failed items were skipped.' : 'Batch operation completed.';
-                        }
-                    } catch (error) {
-                        label.textContent = 'Batch operation stopped'; detail.textContent = error.message;
-                        if (!batchCancelled) {
-                            detail.textContent += ' The current position was saved. Click Import All Pages again to resume.';
+                    } else {
+                        label.textContent = 'Batch operation paused';
+                        detail.textContent = error.message + ' Your server-side position is saved; use Resume from saved position.';
+                        if (lastCheckpoint) {
+                            lastCheckpoint.status = 'running';
+                            showResumeNotice(lastCheckpoint);
                         }
                     }
-                    buttons.forEach(function (item) { item.disabled = false; });
+                } finally {
+                    batchRunning = false;
+                    batchButtons.forEach(function (control) { control.disabled = false; });
                     cancelButton.hidden = true;
+                }
+            }
+
+            document.querySelectorAll('[data-all-action]').forEach(function (btn) {
+                btn.addEventListener('click', function (event) {
+                    event.preventDefault();
+                    if (btn.dataset.confirm && !window.confirm(btn.dataset.confirm)) return;
+                    if (serverCheckpoint && serverCheckpoint.status === 'running' && !window.confirm('A paused supplier sync is already saved. Start a new batch and replace that saved position?')) return;
+                    runBatch(btn, null);
                 });
             });
+            if (resumeButton) resumeButton.addEventListener('click', function () {
+                if (!serverCheckpoint) return;
+                const matchingButton = document.querySelector('[data-all-action="' + serverCheckpoint.batch_action + '"]');
+                runBatch(matchingButton || {dataset: {allAction: serverCheckpoint.batch_action}}, serverCheckpoint);
+            });
+            if (discardButton) discardButton.addEventListener('click', async function () {
+                if (!serverCheckpoint || !window.confirm('Discard this saved sync position? Completed product updates will be kept.')) return;
+                discardButton.disabled = true;
+                try { await cancelCheckpoint(serverCheckpoint.token || ''); } catch (error) { window.alert(error.message); }
+                discardButton.disabled = false;
+            });
+            showResumeNotice(serverCheckpoint);
         });
         </script>
         <?php
@@ -5802,7 +6119,7 @@ final class TAQI_Life_Dropshipping {
             return array( 'message' => 'publish' === $action ? 'Product published successfully.' : 'Product unpublished and returned to draft.' );
         }
 
-        if ( in_array( $action, array( 'resync', 'relink' ), true ) ) {
+        if ( in_array( $action, array( 'resync', 'resync_price', 'resync_images', 'relink' ), true ) ) {
             $page_hint = absint( get_post_meta( $product_id, '_taqi_supplier_api_page', true ) );
             $live      = $this->find_live_supplier_product( $supplier_id, $page_hint );
             if ( is_wp_error( $live ) ) {
@@ -5813,7 +6130,8 @@ final class TAQI_Life_Dropshipping {
                 return $this->relink_product_sync( $product_id, $live['product'], $live['page'] );
             }
 
-            return $this->resync_product( $product_id, $live['product'], $live['page'] );
+            $sync_mode = 'resync_price' === $action ? 'price' : ( 'resync_images' === $action ? 'images' : 'full' );
+            return $this->resync_product( $product_id, $live['product'], $live['page'], 'price' === $sync_mode, $sync_mode );
         }
 
         return new WP_Error( 'taqi_unknown_management_action', 'Unknown product management action. No changes were made.' );
@@ -5890,7 +6208,7 @@ final class TAQI_Life_Dropshipping {
                 <p>Products linked to <?php echo esc_html( $this->settings()['supplier_name'] ); ?> through TAQI LIFE Dropshipping.</p>
 
             <div class="notice notice-info inline taqi-sync-note">
-                <p><strong>Safe sync behavior:</strong> Re-sync refreshes supplier price, sale price, stock, mapped categories and supplier metadata. Your local product title, description and downloaded images are preserved; missing supplier images are added when safely detected. <strong>Unpublish</strong> removes TAQI LIFE supplier images from Media to save storage; publishing again downloads them from the saved supplier data. <strong>Cancel Sync</strong> keeps the WooCommerce product but stops synchronization. <strong>Delete</strong> permanently deletes the local product and its unused images; it never deletes anything from the supplier API.</p>
+                <p><strong>Safe sync behavior:</strong> <strong>Sync Price/Data</strong> refreshes price, stock, mapped categories and supplier metadata without touching images. <strong>Sync Images</strong> adds missing supplier images without changing price or stock. Your local title and description are preserved. <strong>Unpublish</strong> removes TAQI LIFE supplier images from Media to save storage; publishing again downloads them from the saved supplier data. <strong>Cancel Sync</strong> keeps the product but stops synchronization. <strong>Delete</strong> permanently deletes the local product and its unused images.</p>
             </div>
 
             <div style="background:#fff8e5;border:1px solid #dba617;border-left:4px solid #dba617;padding:14px 16px;margin:18px 0;max-width:1100px;">
@@ -6039,7 +6357,14 @@ final class TAQI_Life_Dropshipping {
                                         <?php wp_nonce_field( 'taqi_manage_imported_product', 'taqi_manage_imported_nonce' ); ?>
                                         <input type="hidden" name="product_id" value="<?php echo esc_attr( $product_id ); ?>">
                                         <input type="hidden" name="supplier_id" value="<?php echo esc_attr( $supplier_id ); ?>">
-                                        <button type="submit" name="taqi_manage_imported_action" value="resync" class="button button-primary">Re-sync</button>
+                                        <button type="submit" name="taqi_manage_imported_action" value="resync_price" class="button button-primary">Sync Price/Data</button>
+                                    </form>
+
+                                    <form method="post" style="display:inline;">
+                                        <?php wp_nonce_field( 'taqi_manage_imported_product', 'taqi_manage_imported_nonce' ); ?>
+                                        <input type="hidden" name="product_id" value="<?php echo esc_attr( $product_id ); ?>">
+                                        <input type="hidden" name="supplier_id" value="<?php echo esc_attr( $supplier_id ); ?>">
+                                        <button type="submit" name="taqi_manage_imported_action" value="resync_images" class="button">Sync Images</button>
                                     </form>
 
                                     <form method="post" style="display:inline;" onsubmit="return confirm('Cancel synchronization? The WooCommerce product will remain unchanged and can be re-linked later.');">
@@ -6367,7 +6692,7 @@ final class TAQI_Life_Dropshipping {
         <p><strong>Supplier API Page:</strong><br><?php echo esc_html( $api_page ? $api_page : 'Unknown / legacy import' ); ?></p>
         <?php if ( $variant_note ) : ?><p style="padding:8px;background:#f6f7f7;border-left:3px solid #2271b1;"><?php echo esc_html( $variant_note ); ?></p><?php endif; ?>
         <p><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=taqi-dropshipping-imported' ) ); ?>">Manage Sync</a></p>
-        <p class="description">Re-sync preserves local title, description and images, adds missing supplier images when detected, and refreshes supplier-controlled price, stock, mapped categories and metadata.</p>
+        <p class="description">Use Sync Price/Data to update pricing and stock without images, or Sync Images to download missing supplier images without changing pricing.</p>
         <?php
     }
 }
