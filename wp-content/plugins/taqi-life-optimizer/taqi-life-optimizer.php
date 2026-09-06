@@ -13,8 +13,9 @@ class TAQI_Life_Optimizer {
     public function __construct() {
         add_action( 'init', array( $this, 'disable_emojis' ) );
         add_action( 'wp_enqueue_scripts', array( $this, 'optimize_woocommerce_scripts' ), 99 );
-        add_action( 'wp_enqueue_scripts', array( $this, 'ensure_astra_frontend_styles' ), 1000 );
+        add_action( 'wp_enqueue_scripts', array( $this, 'ensure_astra_frontend_styles' ), 9999 );
         add_action( 'litespeed_init', array( $this, 'disable_litespeed_css_optimizations' ), 1 );
+        add_filter( 'litespeed_can_optm', array( $this, 'bypass_litespeed_optimization_on_store_pages' ), 999 );
         add_action( 'admin_init', array( $this, 'maybe_purge_litespeed_css_cache' ), 1 );
         add_filter( 'xmlrpc_enabled', '__return_false' );
 
@@ -35,12 +36,12 @@ class TAQI_Life_Optimizer {
      * Remove stale LiteSpeed combined/UCSS assets once after this fix is deployed.
      */
     public function maybe_purge_litespeed_css_cache() {
-        if ( ! current_user_can( 'manage_options' ) || '2' === get_option( 'taqi_life_litespeed_css_reset', '' ) || false === has_action( 'litespeed_purge_all' ) ) {
+        if ( ! current_user_can( 'manage_options' ) || '3' === get_option( 'taqi_life_litespeed_css_reset', '' ) || false === has_action( 'litespeed_purge_all' ) ) {
             return;
         }
 
         do_action( 'litespeed_purge_all', 'TAQI Life CSS compatibility reset' );
-        update_option( 'taqi_life_litespeed_css_reset', '2', false );
+        update_option( 'taqi_life_litespeed_css_reset', '3', false );
     }
 
     public function disable_emojis() {
@@ -61,17 +62,43 @@ class TAQI_Life_Optimizer {
     }
 
     /**
-     * Recover Astra's base stylesheet if another optimizer or a damaged queue
-     * prevents the theme from enqueueing it normally.
+     * Do not let CSS optimization rewrite checkout, cart, or account markup.
+     * These pages rely on WooCommerce block styles and must remain stable.
+     *
+     * @param bool $can_optimize LiteSpeed's current optimization decision.
+     * @return bool
+     */
+    public function bypass_litespeed_optimization_on_store_pages( $can_optimize ) {
+        if ( is_admin() || ! function_exists( 'is_checkout' ) ) {
+            return $can_optimize;
+        }
+
+        if ( is_checkout() || is_cart() || is_account_page() ) {
+            return false;
+        }
+
+        return $can_optimize;
+    }
+
+    /**
+     * Load an independent, cache-busted copy of Astra's base stylesheet.
+     * This remains available if an optimizer removes or serves a stale version
+     * of the normal astra-theme-css handle.
      */
     public function ensure_astra_frontend_styles() {
-        if ( 'astra' !== get_template() || wp_style_is( 'astra-theme-css', 'enqueued' ) ) {
+        if ( 'astra' !== get_template() ) {
             return;
         }
 
-        $asset = 'style.min.css';
-        if ( class_exists( 'Astra_Builder_Helper' ) && Astra_Builder_Helper::apply_flex_based_css() ) {
-            $asset = 'style-flex.min.css';
+        $asset = '';
+        $styles = wp_styles();
+        if ( isset( $styles->registered['astra-theme-css'] ) ) {
+            $source = (string) $styles->registered['astra-theme-css']->src;
+            $asset  = basename( (string) parse_url( $source, PHP_URL_PATH ) );
+        }
+
+        if ( ! preg_match( '/^[a-z0-9-]+(?:\\.min)?\\.css$/i', $asset ) ) {
+            $asset = ( class_exists( 'Astra_Builder_Helper' ) && Astra_Builder_Helper::apply_flex_based_css() ) ? 'style-flex.min.css' : 'style.min.css';
         }
 
         $path = trailingslashit( get_template_directory() ) . 'assets/css/minified/' . $asset;
@@ -82,8 +109,8 @@ class TAQI_Life_Optimizer {
         wp_enqueue_style(
             'taqi-astra-frontend-recovery',
             trailingslashit( get_template_directory_uri() ) . 'assets/css/minified/' . $asset,
-            array(),
-            (string) filemtime( $path ),
+            wp_style_is( 'astra-theme-css', 'enqueued' ) ? array( 'astra-theme-css' ) : array(),
+            'taqi-astra-recovery-3-' . (string) filemtime( $path ),
             'all'
         );
     }
