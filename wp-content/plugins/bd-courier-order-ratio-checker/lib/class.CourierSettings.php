@@ -28,6 +28,7 @@ class CourierSettings {
         // with a normal form submission as the final token-save fallback.
         add_action( 'admin_init', array( $this, 'handle_admin_api_proxy' ), 0 );
         add_action( 'admin_init', array( $this, 'handle_api_token_form_fallback' ), 1 );
+        add_action( 'admin_init', array( $this, 'handle_connection_test_form_fallback' ), 1 );
 
         // Admin notices for database issues
         add_action( 'admin_init', array( $this, 'check_database_admin_notice' ) );
@@ -435,6 +436,45 @@ JS
         exit;
     }
 
+    /**
+     * Test the external API without REST/AJAX when the live host blocks JSON
+     * requests. The result is kept briefly for the next admin page render.
+     */
+    public function handle_connection_test_form_fallback() {
+        if ( 'POST' !== strtoupper( isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '' ) || empty( $_POST['bd_courier_connection_fallback'] ) ) {
+            return;
+        }
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You are not allowed to test this connection.', 'bd-courier-order-ratio-checker' ), '', array( 'response' => 403 ) );
+        }
+
+        check_admin_referer( 'bd_courier_connection_fallback', 'bd_courier_connection_fallback_nonce' );
+        require_once dirname( __FILE__ ) . '/class.CourierAPI.php';
+        $result = CourierAPI::check_api_connection();
+        $success = is_array( $result ) && isset( $result['status'] ) && 'success' === $result['status'];
+        $message = is_array( $result ) && ! empty( $result['message'] ) ? sanitize_text_field( $result['message'] ) : ( $success ? 'Connection successful.' : 'Connection failed.' );
+
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            $http_code = is_array( $result ) && isset( $result['http_code'] ) ? absint( $result['http_code'] ) : 0;
+            error_log( sprintf( 'BD Courier connection test: status=%s http_code=%d message=%s', $success ? 'success' : 'error', $http_code, $message ) );
+        }
+
+        set_transient(
+            'bd_courier_connection_test_' . get_current_user_id(),
+            array( 'success' => $success, 'message' => $message ),
+            MINUTE_IN_SECONDS
+        );
+
+        $url = add_query_arg(
+            'bd_courier_connection_test',
+            $success ? '1' : '0',
+            admin_url( 'admin.php?page=bd-courier-settings' )
+        );
+        wp_safe_redirect( $url . '#api' );
+        exit;
+    }
+
     public function render_settings_page() {
         $save_status = isset( $_GET['bd_courier_token_saved'] ) ? sanitize_key( wp_unslash( $_GET['bd_courier_token_saved'] ) ) : '';
         if ( '1' === $save_status ) {
@@ -442,11 +482,26 @@ JS
         } elseif ( '0' === $save_status ) {
             echo '<div style="max-width:1120px;margin:18px auto 0;padding:12px 16px;border-left:4px solid #d63638;background:#fcf0f1;color:#8a2424;"><strong>API token could not be saved.</strong> Check database permissions and available disk space.</div>';
         }
+        $connection_test = false;
+        if ( isset( $_GET['bd_courier_connection_test'] ) ) {
+            $connection_test = get_transient( 'bd_courier_connection_test_' . get_current_user_id() );
+            delete_transient( 'bd_courier_connection_test_' . get_current_user_id() );
+        }
+        if ( is_array( $connection_test ) ) {
+            $connection_color = ! empty( $connection_test['success'] ) ? '#00a32a' : '#d63638';
+            $connection_background = ! empty( $connection_test['success'] ) ? '#edfaef' : '#fcf0f1';
+            $connection_text = ! empty( $connection_test['success'] ) ? '#145523' : '#8a2424';
+            echo '<div style="max-width:1120px;margin:18px auto 0;padding:12px 16px;border-left:4px solid ' . esc_attr( $connection_color ) . ';background:' . esc_attr( $connection_background ) . ';color:' . esc_attr( $connection_text ) . '"><strong>' . ( ! empty( $connection_test['success'] ) ? 'Connection successful.' : 'Connection failed.' ) . '</strong> ' . esc_html( $connection_test['message'] ) . '</div>';
+        }
         ?>
         <form id="bd-courier-api-token-fallback-form" method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=bd-courier-settings' ) ); ?>" style="display:none;">
             <?php wp_nonce_field( 'bd_courier_api_token_fallback', 'bd_courier_api_token_fallback_nonce' ); ?>
             <input type="hidden" name="bd_courier_api_token_fallback" value="1">
             <input type="hidden" id="bd-courier-api-token-fallback-value" name="apiToken" value="">
+        </form>
+        <form id="bd-courier-connection-fallback-form" method="post" action="<?php echo esc_url( admin_url( 'admin.php?page=bd-courier-settings' ) ); ?>" style="display:none;">
+            <?php wp_nonce_field( 'bd_courier_connection_fallback', 'bd_courier_connection_fallback_nonce' ); ?>
+            <input type="hidden" name="bd_courier_connection_fallback" value="1">
         </form>
         <div style="max-width:1120px;margin:18px auto 0;padding:9px 14px;border-left:4px solid #2271b1;background:#f0f6fc;color:#174a6b;font-size:13px;">
             <strong>Live API save protection active.</strong> API Token → Save Settings uses a secure WordPress form and does not depend on REST/AJAX.
@@ -496,7 +551,7 @@ JS
             document.addEventListener('click', function (event) {
                 var button = event.target && event.target.closest ? event.target.closest('button') : null;
                 var root = document.getElementById('bd-courier-react-root');
-                if (!button || !root || !root.contains(button) || button.textContent.trim() !== 'Save Settings') return;
+                if (!button || !root || !root.contains(button) || ['Save Settings', 'Test Connection'].indexOf(button.textContent.trim()) === -1) return;
 
                 var card = button.closest('.bdc-card');
                 if (!card) return;
@@ -513,6 +568,18 @@ JS
                 var tokenInput = card.querySelector('input[type="password"], input[type="text"]');
                 var form = document.getElementById('bd-courier-api-token-fallback-form');
                 var fallbackValue = document.getElementById('bd-courier-api-token-fallback-value');
+                var connectionForm = document.getElementById('bd-courier-connection-fallback-form');
+
+                if (button.textContent.trim() === 'Test Connection') {
+                    if (!connectionForm) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.stopImmediatePropagation();
+                    button.disabled = true;
+                    connectionForm.submit();
+                    return;
+                }
+
                 if (!tokenInput || !form || !fallbackValue) return;
 
                 event.preventDefault();
