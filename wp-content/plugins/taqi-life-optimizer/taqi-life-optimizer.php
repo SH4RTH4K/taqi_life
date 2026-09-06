@@ -36,12 +36,12 @@ class TAQI_Life_Optimizer {
      * Remove stale LiteSpeed combined/UCSS assets once after this fix is deployed.
      */
     public function maybe_purge_litespeed_css_cache() {
-        if ( ! current_user_can( 'manage_options' ) || '4' === get_option( 'taqi_life_litespeed_css_reset', '' ) || false === has_action( 'litespeed_purge_all' ) ) {
+        if ( ! current_user_can( 'manage_options' ) || '5' === get_option( 'taqi_life_litespeed_css_reset', '' ) || false === has_action( 'litespeed_purge_all' ) ) {
             return;
         }
 
         do_action( 'litespeed_purge_all', 'TAQI Life CSS compatibility reset' );
-        update_option( 'taqi_life_litespeed_css_reset', '4', false );
+        update_option( 'taqi_life_litespeed_css_reset', '5', false );
     }
 
     public function disable_emojis() {
@@ -108,9 +108,112 @@ class TAQI_Life_Optimizer {
             'taqi-astra-frontend-recovery',
             trailingslashit( get_template_directory_uri() ) . 'assets/css/minified/' . $asset,
             wp_style_is( 'astra-theme-css', 'enqueued' ) ? array( 'astra-theme-css' ) : array(),
-            'taqi-astra-recovery-4-' . (string) filemtime( $path ),
+            'taqi-astra-recovery-5-' . (string) filemtime( $path ),
             'all'
         );
+
+        wp_add_inline_style( 'taqi-astra-frontend-recovery', $this->astra_header_layout_recovery_css() );
+    }
+
+    /**
+     * Keep a long primary menu inside Astra's header even if generated Astra
+     * builder CSS becomes unavailable. This is deliberately structural: it
+     * restores header flow without changing the configured colours or fonts.
+     *
+     * @return string
+     */
+    private function astra_header_layout_recovery_css() {
+        return '
+            #masthead,
+            #masthead .ast-main-header-wrap,
+            #masthead .ast-primary-header-bar {
+                position: relative !important;
+                z-index: 20;
+            }
+
+            #content,
+            .site-content,
+            #primary {
+                clear: both;
+            }
+
+            @media (min-width: 922px) {
+                #masthead #ast-mobile-header {
+                    display: none !important;
+                }
+
+                #masthead #ast-desktop-header,
+                #masthead .ast-main-header-wrap,
+                #masthead .ast-primary-header-bar,
+                #masthead .site-primary-header-wrap {
+                    display: block !important;
+                    width: 100%;
+                    height: auto !important;
+                    min-height: 0 !important;
+                }
+
+                #masthead .ast-builder-grid-row {
+                    display: flex !important;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 18px;
+                    width: min(1500px, calc(100% - 40px));
+                    min-height: 110px;
+                    margin: 0 auto;
+                }
+
+                #masthead .site-header-primary-section-left {
+                    flex: 0 0 auto !important;
+                }
+
+                #masthead .site-header-primary-section-right {
+                    display: block !important;
+                    flex: 1 1 auto !important;
+                    min-width: 0;
+                    margin-left: auto;
+                }
+
+                #masthead .ast-builder-menu,
+                #masthead .ast-main-header-bar-alignment,
+                #masthead .main-header-bar-navigation,
+                #masthead #primary-site-navigation-desktop,
+                #masthead #primary-site-navigation-desktop .main-navigation {
+                    display: block !important;
+                    width: 100%;
+                    min-width: 0;
+                }
+
+                #masthead #ast-hf-menu-1 {
+                    display: flex !important;
+                    flex-wrap: wrap !important;
+                    align-items: center;
+                    justify-content: flex-end;
+                    column-gap: 22px;
+                    row-gap: 0;
+                    width: 100%;
+                    margin: 0;
+                    padding: 10px 0;
+                }
+
+                #masthead #ast-hf-menu-1 > li {
+                    display: flex !important;
+                    flex: 0 0 auto;
+                    align-items: center;
+                    min-height: 42px;
+                    margin: 0 !important;
+                    line-height: 1.3 !important;
+                }
+
+                #masthead #ast-hf-menu-1 > li > a {
+                    display: flex !important;
+                    align-items: center;
+                    min-height: 42px;
+                    padding: 0 !important;
+                    line-height: 1.3 !important;
+                    white-space: nowrap;
+                }
+            }
+        ';
     }
 
     // Step 2: Database Optimization
