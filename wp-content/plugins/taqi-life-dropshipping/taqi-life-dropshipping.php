@@ -63,7 +63,88 @@ final class TAQI_Life_Product {
         if ( isset( $this->data['category_ids'] ) ) { wp_set_object_terms( $this->id, $this->data['category_ids'], 'taqi_category', false ); }
         return $this->id;
     }
-    public function delete( $force = false ) { foreach ( $this->get_children() as $child ) { wp_delete_post( $child, true ); } return (bool) wp_delete_post( $this->id, true ); }
+    /**
+     * Delete the product and the image attachments belonging to it.
+     *
+     * Supplier images can be reused by more than one product, so an
+     * attachment is only removed when no other post still references it.
+     */
+    public function delete( $force = false ) {
+        $children  = $this->get_children();
+        $post_ids  = array_values( array_unique( array_merge( array( $this->id ), $children ) ) );
+        $image_ids = array();
+
+        foreach ( $post_ids as $post_id ) {
+            $image_ids[] = absint( get_post_thumbnail_id( $post_id ) );
+            $image_ids   = array_merge( $image_ids, array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) ) );
+        }
+        $image_ids = array_values( array_unique( array_filter( $image_ids ) ) );
+
+        foreach ( $children as $child ) {
+            wp_delete_post( $child, true );
+        }
+        $deleted = (bool) wp_delete_post( $this->id, true );
+
+        if ( $deleted ) {
+            foreach ( $image_ids as $image_id ) {
+                if ( ! $this->image_used_elsewhere( $image_id, $post_ids ) ) {
+                    wp_delete_attachment( $image_id, true );
+                }
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * Check whether an attachment is still owned or referenced by another post.
+     */
+    private function image_used_elsewhere( $image_id, $deleted_post_ids ) {
+        $image_id         = absint( $image_id );
+        $deleted_post_ids = array_map( 'absint', (array) $deleted_post_ids );
+        $attachment       = get_post( $image_id );
+
+        if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+            return true;
+        }
+
+        if ( $attachment->post_parent && ! in_array( absint( $attachment->post_parent ), $deleted_post_ids, true ) ) {
+            return true;
+        }
+
+        $posts = get_posts(
+            array(
+                // Include non-public product post types as well as regular posts.
+                'post_type'      => get_post_types( array(), 'names' ),
+                'post_status'    => 'any',
+                'fields'         => 'ids',
+                'posts_per_page' => -1,
+                'meta_query'     => array(
+                    'relation' => 'OR',
+                    array( 'key' => '_thumbnail_id', 'value' => (string) $image_id ),
+                    array( 'key' => '_taqi_gallery_image_ids', 'compare' => 'EXISTS' ),
+                ),
+            )
+        );
+
+        foreach ( $posts as $post_id ) {
+            $post_id = absint( $post_id );
+            if ( in_array( $post_id, $deleted_post_ids, true ) ) {
+                continue;
+            }
+
+            if ( absint( get_post_thumbnail_id( $post_id ) ) === $image_id ) {
+                return true;
+            }
+
+            $gallery_ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+            if ( in_array( $image_id, $gallery_ids, true ) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 final class TAQI_Life_Dropshipping {
