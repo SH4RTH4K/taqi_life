@@ -980,11 +980,11 @@ final class TAQI_Life_Dropshipping {
 
         switch ( $mode ) {
             case '10':
-                return round( $price / 10 ) * 10;
+                return ceil( ( $price / 10 ) - 0.0000001 ) * 10;
             case '50':
-                return round( $price / 50 ) * 50;
+                return ceil( ( $price / 50 ) - 0.0000001 ) * 50;
             case '100':
-                return round( $price / 100 ) * 100;
+                return ceil( ( $price / 100 ) - 0.0000001 ) * 100;
             default:
                 return $price;
         }
@@ -1054,6 +1054,7 @@ final class TAQI_Life_Dropshipping {
         $maximum  = $this->supplier_maximum_selling_price( $product );
         $target   = null;
         $warning  = '';
+        $price_status = 'normal';
 
         $minimum_percent = isset( $settings['minimum_markup_percent'] )
             ? max( 0, (float) $settings['minimum_markup_percent'] )
@@ -1063,7 +1064,8 @@ final class TAQI_Life_Dropshipping {
             : 20;
 
         if ( null === $cost ) {
-            $warning = 'Cost Price (API sale_price) is missing, so TAQI LIFE price cannot be calculated.';
+            $price_status = 'review_required';
+            $warning = 'Cost Price (API sale_price) is missing. The product can still import, but its selling price needs review.';
         } else {
             // TAQI LIFE selling price is always user-controlled percentage markup on Cost.
             $target = $cost + ( $cost * $taqi_percent / 100 );
@@ -1071,6 +1073,7 @@ final class TAQI_Life_Dropshipping {
 
             if ( 'yes' === $settings['enforce_minimum_price'] && null !== $minimum && $target < $minimum ) {
                 $target = $minimum;
+                $price_status = 'minimum_adjusted';
                 $warning = sprintf(
                     'TAQI markup %.2f%% is below the minimum %.2f%% for this rule; Minimum Selling Price was used.',
                     $taqi_percent,
@@ -1079,16 +1082,27 @@ final class TAQI_Life_Dropshipping {
             }
 
             if ( 'yes' === $settings['cap_at_maximum_price'] && null !== $maximum && $target > $maximum ) {
-                $target = $maximum;
-                $warning = sprintf(
-                    'TAQI markup %.2f%% calculated above the supplier Maximum Selling Price; the price was capped at the maximum.',
-                    $taqi_percent
-                );
+                if ( $maximum >= $cost ) {
+                    $target = $maximum;
+                    $price_status = 'reduced_margin';
+                    $warning = sprintf(
+                        'TAQI markup %.2f%% is above the supplier Maximum Selling Price. The product remains importable and its price was capped at the maximum with a reduced margin.',
+                        $taqi_percent
+                    );
+                } else {
+                    $target = null;
+                    $price_status = 'review_required';
+                    $warning = 'Supplier Maximum Selling Price is below Cost Price. The product remains importable, but no unsafe selling price was applied.';
+                }
+            } elseif ( 'yes' !== $settings['cap_at_maximum_price'] && null !== $maximum && $target > $maximum ) {
+                $price_status = 'above_maximum';
+                $warning = 'Calculated TAQI price is above the supplier Maximum Selling Price because the maximum-price safety rule is disabled.';
             }
 
-            if ( $target < $cost ) {
+            if ( null !== $target && $target < $cost ) {
                 $target  = null;
-                $warning = 'Calculated selling price would be below Cost Price; price update was blocked.';
+                $price_status = 'review_required';
+                $warning = 'Calculated selling price would be below Cost Price. The product remains importable, but no unsafe selling price was applied.';
             }
         }
 
@@ -1110,6 +1124,7 @@ final class TAQI_Life_Dropshipping {
             'markup_percent'          => $markup_percent,
             'minimum_markup_percent'  => $minimum_percent,
             'taqi_markup_percent'     => $taqi_percent,
+            'price_status'            => $price_status,
             'warning'                 => $warning,
         );
     }
@@ -1332,6 +1347,12 @@ final class TAQI_Life_Dropshipping {
         $this->apply_category_mapping( $product, $supplier_product );
         $this->apply_stock_data( $product, $supplier_product );
         $this->refresh_supplier_meta( $product, $supplier_product, $api_page );
+        $parent_pricing = $this->pricing_breakdown( $supplier_product );
+        if ( ! empty( $parent_pricing['warning'] ) ) {
+            $product->update_meta_data( '_taqi_price_warning', $parent_pricing['warning'] );
+        } else {
+            $product->delete_meta_data( '_taqi_price_warning' );
+        }
 
         $updated_variations = 0;
         if ( $product->is_type( 'variable' ) ) {
@@ -1360,15 +1381,23 @@ final class TAQI_Life_Dropshipping {
                     continue;
                 }
                 $raw = $by_id[ $variant_id ];
+                $variation_pricing = $this->pricing_breakdown( $raw );
                 $regular = $this->product_regular_price( $raw );
                 if ( null !== $regular ) {
                     $variation->set_regular_price( number_format( $regular, 2, '.', '' ) );
+                } else {
+                    $variation->set_regular_price( '' );
                 }
                 $sale = $this->product_sale_price( $raw, $regular );
                 if ( null !== $sale ) {
                     $variation->set_sale_price( number_format( $sale, 2, '.', '' ) );
                 } else {
                     $variation->set_sale_price( '' );
+                }
+                if ( ! empty( $variation_pricing['warning'] ) ) {
+                    $variation->update_meta_data( '_taqi_price_warning', $variation_pricing['warning'] );
+                } else {
+                    $variation->delete_meta_data( '_taqi_price_warning' );
                 }
                 $this->apply_stock_data( $variation, $raw );
                 $variation->save();
@@ -1378,6 +1407,8 @@ final class TAQI_Life_Dropshipping {
             $regular = $this->product_regular_price( $supplier_product );
             if ( null !== $regular ) {
                 $product->set_regular_price( number_format( $regular, 2, '.', '' ) );
+            } else {
+                $product->set_regular_price( '' );
             }
             $sale = $this->product_sale_price( $supplier_product, $regular );
             if ( null !== $sale ) {
@@ -1476,9 +1507,9 @@ final class TAQI_Life_Dropshipping {
             'status'             => 'price_recalculated',
             'product_id'         => $product_id,
             'updated_variations' => $updated_variations,
-            'blocked'            => null === $regular,
+            'needs_review'       => null === $regular,
             'warning'            => $pricing['warning'],
-            'message'            => null === $regular ? 'Price blocked because a valid safe selling price could not be calculated.' : 'Price recalculated within the supplier pricing rules.',
+            'message'            => null === $regular ? 'Product retained; its selling price needs review because no safe price could be calculated.' : 'Price recalculated within the supplier pricing rules.',
         );
     }
 
@@ -2487,6 +2518,13 @@ final class TAQI_Life_Dropshipping {
         $product->update_meta_data( '_taqi_supplier_id', (string) $supplier_id );
         $product->update_meta_data( '_taqi_supplier_code', $sku );
 
+        $pricing = $this->pricing_breakdown( $supplier_product );
+        if ( ! empty( $pricing['warning'] ) ) {
+            $product->update_meta_data( '_taqi_price_warning', $pricing['warning'] );
+        } else {
+            $product->delete_meta_data( '_taqi_price_warning' );
+        }
+
         $supplier_category = $this->supplier_category( $supplier_product );
         if ( '' !== $supplier_category['id'] ) {
             $product->update_meta_data( '_taqi_supplier_category_id', $supplier_category['id'] );
@@ -3183,9 +3221,9 @@ final class TAQI_Life_Dropshipping {
                         <td>
                             <select name="price_rounding" id="price_rounding">
                                 <option value="none" <?php selected( $settings['price_rounding'], 'none' ); ?>>No rounding</option>
-                                <option value="10" <?php selected( $settings['price_rounding'], '10' ); ?>>Nearest 10</option>
-                                <option value="50" <?php selected( $settings['price_rounding'], '50' ); ?>>Nearest 50</option>
-                                <option value="100" <?php selected( $settings['price_rounding'], '100' ); ?>>Nearest 100</option>
+                                <option value="10" <?php selected( $settings['price_rounding'], '10' ); ?>>Round up to next 10</option>
+                                <option value="50" <?php selected( $settings['price_rounding'], '50' ); ?>>Round up to next 50</option>
+                                <option value="100" <?php selected( $settings['price_rounding'], '100' ); ?>>Round up to next 100</option>
                             </select>
                         </td>
                     </tr>
@@ -3194,7 +3232,7 @@ final class TAQI_Life_Dropshipping {
                         <td>
                             <label><input type="checkbox" name="enforce_minimum_price" value="1" <?php checked( $settings['enforce_minimum_price'], 'yes' ); ?>> Never allow TAQI price below calculated Minimum Selling Price</label><br>
                             <label><input type="checkbox" name="cap_at_maximum_price" value="1" <?php checked( $settings['cap_at_maximum_price'], 'yes' ); ?>> Never allow TAQI price above supplier Maximum Selling Price</label>
-                            <p class="description">Recommended: keep both enabled. A price below Cost Price is always blocked.</p>
+                            <p class="description">Recommended: keep both enabled. Products always import. If no safe price exists, the product is kept with Price Review Required and no unsafe selling price.</p>
                         </td>
                     </tr>
                 </table>
@@ -3208,7 +3246,7 @@ final class TAQI_Life_Dropshipping {
                     <tr><th>Minimum Markup</th><td id="taqi-preview-minimum-markup"><?php echo esc_html( number_format_i18n( (float) $settings['minimum_markup_percent'], 2 ) ); ?>%</td><td>User setting</td></tr>
                     <tr><th>Minimum Selling Price</th><td id="taqi-preview-minimum"><?php echo wp_kses_post( $this->format_money( $example_pricing['minimum'] ) ); ?></td><td>Cost + Minimum %</td></tr>
                     <tr><th>TAQI Markup</th><td id="taqi-preview-taqi-markup"><?php echo esc_html( number_format_i18n( (float) $settings['taqi_markup_percent'], 2 ) ); ?>%</td><td>User setting</td></tr>
-                    <tr><th>TAQI LIFE Selling Price</th><td><strong id="taqi-preview-selling"><?php echo null !== $example_pricing['selling'] ? wp_kses_post( $this->format_money( $example_pricing['selling'] ) ) : 'Blocked / unavailable'; ?></strong></td><td>Cost + TAQI %</td></tr>
+                    <tr><th>TAQI LIFE Selling Price</th><td><strong id="taqi-preview-selling"><?php echo null !== $example_pricing['selling'] ? wp_kses_post( $this->format_money( $example_pricing['selling'] ) ) : 'Price review required'; ?></strong></td><td>Cost + TAQI %</td></tr>
                     <tr><th>Supplier Maximum Selling Price</th><td id="taqi-preview-maximum"><?php echo wp_kses_post( $this->format_money( $example_pricing['maximum'] ) ); ?></td><td><code>price</code></td></tr>
                     <tr><th>TAQI Profit</th><td id="taqi-preview-profit"><?php echo null !== $example_pricing['profit'] ? wp_kses_post( $this->format_money( $example_pricing['profit'] ) ) : '—'; ?></td><td id="taqi-preview-profit-markup"><?php echo null !== $example_pricing['markup_percent'] ? esc_html( number_format_i18n( $example_pricing['markup_percent'], 2 ) . '% actual markup' ) : '—'; ?></td></tr>
                 </tbody></table>
@@ -3229,13 +3267,13 @@ final class TAQI_Life_Dropshipping {
                     var serverWarning = document.getElementById('taqi-preview-server-warning');
 
                     function formatMoney(value) {
-                        return null === value ? 'Blocked / unavailable' : Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        return null === value ? 'Price review required' : Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                     }
 
                     function roundPrice(value) {
-                        if ('10' === rounding) { return Math.round(value / 10) * 10; }
-                        if ('50' === rounding) { return Math.round(value / 50) * 50; }
-                        if ('100' === rounding) { return Math.round(value / 100) * 100; }
+                        if ('10' === rounding) { return Math.ceil((value / 10) - 0.0000001) * 10; }
+                        if ('50' === rounding) { return Math.ceil((value / 50) - 0.0000001) * 50; }
+                        if ('100' === rounding) { return Math.ceil((value / 100) - 0.0000001) * 100; }
                         return value;
                     }
 
@@ -3262,11 +3300,11 @@ final class TAQI_Life_Dropshipping {
                         }
                         if (capMaximum && selling > maximum) {
                             selling = maximum;
-                            warning = 'TAQI price was capped at the Supplier Maximum Selling Price.';
+                            warning = 'TAQI price was capped at the Supplier Maximum Selling Price. The product remains importable with a reduced margin.';
                         }
                         if (selling < cost) {
                             selling = null;
-                            warning = 'Calculated selling price would be below Cost Price; price update would be blocked.';
+                            warning = 'No safe selling price is available. The product remains importable with Price Review Required.';
                         }
 
                         if (null !== selling) {
@@ -5339,7 +5377,7 @@ final class TAQI_Life_Dropshipping {
                                 <td><?php echo null !== $row_pricing['cost'] ? $this->format_money( $row_pricing['cost'] ) : '—'; ?></td>
                                 <td><?php echo null !== $row_pricing['minimum'] ? $this->format_money( $row_pricing['minimum'] ) : '—'; ?></td>
                                 <td><?php echo null !== $row_pricing['maximum'] ? $this->format_money( $row_pricing['maximum'] ) : '—'; ?></td>
-                                <td><?php echo null !== $row_pricing['selling'] ? '<strong>' . $this->format_money( $row_pricing['selling'] ) . '</strong>' : '<span style="color:#b32d2e;">Blocked</span>'; ?></td>
+                                <td><?php echo null !== $row_pricing['selling'] ? '<strong>' . $this->format_money( $row_pricing['selling'] ) . '</strong>' : '<span style="color:#b32d2e;">Price review required</span>'; ?><?php if ( 'reduced_margin' === $row_pricing['price_status'] ) : ?><br><span style="color:#b26200;">Maximum-capped · Reduced margin</span><?php endif; ?></td>
                                 <td><?php echo $has_vars ? ( $can_var ? '<strong>Variable ready</strong>' : '<span title="Supplier variant references exist but readable attributes are unresolved">Unresolved variants*</span>' ) : 'Simple'; ?></td>
                                 <td class="taqi-action-buttons">
                                     <button type="button" class="button taqi-toggle-details" data-target="<?php echo esc_attr( $detail_id ); ?>">View</button>
@@ -5357,7 +5395,7 @@ final class TAQI_Life_Dropshipping {
                                     <?php endif; ?>
                                 </td>
                             </tr>
-                            <tr id="<?php echo esc_attr( $detail_id ); ?>" style="display:none;background:#f6f7f7;"><td></td><td colspan="10"><p><strong>Supplier images detected:</strong> <?php echo esc_html( $supplier_image_count ); ?></p><p><strong>Price diagnostics:</strong> Cost (API <code>sale_price</code>) = <?php echo null !== $row_pricing['cost'] ? wp_kses_post( $this->format_money( $row_pricing['cost'] ) ) : '—'; ?> &nbsp; | &nbsp; Minimum <?php echo esc_html( number_format_i18n( $row_pricing['minimum_markup_percent'], 2 ) ); ?>% = <?php echo null !== $row_pricing['minimum'] ? wp_kses_post( $this->format_money( $row_pricing['minimum'] ) ) : '—'; ?> &nbsp; | &nbsp; TAQI <?php echo esc_html( number_format_i18n( $row_pricing['taqi_markup_percent'], 2 ) ); ?>% = <strong><?php echo null !== $row_pricing['selling'] ? wp_kses_post( $this->format_money( $row_pricing['selling'] ) ) : 'Blocked'; ?></strong> &nbsp; | &nbsp; Maximum (API <code>price</code>) = <?php echo null !== $row_pricing['maximum'] ? wp_kses_post( $this->format_money( $row_pricing['maximum'] ) ) : '—'; ?><?php if ( ! empty( $row_pricing['warning'] ) ) : ?> <span style="color:#b32d2e;"><?php echo esc_html( $row_pricing['warning'] ); ?></span><?php endif; ?></p><strong>Description:</strong> <?php echo esc_html( $details ? wp_trim_words( $details, 70, '…' ) : 'No description in this API response.' ); ?><?php if ( $has_vars && ! $can_var ) : ?><p><em>Supplier variant references were detected, but readable Size/Color values are unavailable in the current Product API payload. Variation Mapping will show only safely mappable values; unresolved IDs are diagnostic only.</em></p><?php elseif ( $can_var ) : ?><p><strong>Detected attributes:</strong> <?php echo esc_html( implode( ', ', array_keys( $model['attributes'] ) ) ); ?></p><?php endif; ?></td></tr>
+                            <tr id="<?php echo esc_attr( $detail_id ); ?>" style="display:none;background:#f6f7f7;"><td></td><td colspan="10"><p><strong>Supplier images detected:</strong> <?php echo esc_html( $supplier_image_count ); ?></p><p><strong>Price diagnostics:</strong> Cost (API <code>sale_price</code>) = <?php echo null !== $row_pricing['cost'] ? wp_kses_post( $this->format_money( $row_pricing['cost'] ) ) : '—'; ?> &nbsp; | &nbsp; Minimum <?php echo esc_html( number_format_i18n( $row_pricing['minimum_markup_percent'], 2 ) ); ?>% = <?php echo null !== $row_pricing['minimum'] ? wp_kses_post( $this->format_money( $row_pricing['minimum'] ) ) : '—'; ?> &nbsp; | &nbsp; TAQI <?php echo esc_html( number_format_i18n( $row_pricing['taqi_markup_percent'], 2 ) ); ?>% = <strong><?php echo null !== $row_pricing['selling'] ? wp_kses_post( $this->format_money( $row_pricing['selling'] ) ) : 'Price review required'; ?></strong> &nbsp; | &nbsp; Maximum (API <code>price</code>) = <?php echo null !== $row_pricing['maximum'] ? wp_kses_post( $this->format_money( $row_pricing['maximum'] ) ) : '—'; ?><?php if ( ! empty( $row_pricing['warning'] ) ) : ?> <span style="color:#b32d2e;"><?php echo esc_html( $row_pricing['warning'] ); ?></span><?php endif; ?></p><strong>Description:</strong> <?php echo esc_html( $details ? wp_trim_words( $details, 70, '…' ) : 'No description in this API response.' ); ?><?php if ( $has_vars && ! $can_var ) : ?><p><em>Supplier variant references were detected, but readable Size/Color values are unavailable in the current Product API payload. Variation Mapping will show only safely mappable values; unresolved IDs are diagnostic only.</em></p><?php elseif ( $can_var ) : ?><p><strong>Detected attributes:</strong> <?php echo esc_html( implode( ', ', array_keys( $model['attributes'] ) ) ); ?></p><?php endif; ?></td></tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
                     </tbody>
@@ -5687,7 +5725,7 @@ final class TAQI_Life_Dropshipping {
             $action = sanitize_key( wp_unslash( $_POST['taqi_bulk_price_action'] ) );
             $ids    = ! empty( $_POST['product_ids'] ) && is_array( $_POST['product_ids'] ) ? array_map( 'absint', wp_unslash( $_POST['product_ids'] ) ) : array();
             $recalculated = 0;
-            $blocked      = 0;
+            $needs_review = 0;
             $failed       = 0;
 
             if ( 'recalculate' === $action ) {
@@ -5701,15 +5739,15 @@ final class TAQI_Life_Dropshipping {
                         ++$failed;
                     } else {
                         ++$recalculated;
-                        if ( ! empty( $result['blocked'] ) ) {
-                            ++$blocked;
+                        if ( ! empty( $result['needs_review'] ) ) {
+                            ++$needs_review;
                         }
                     }
                 }
             }
 
             return array(
-                'message' => sprintf( 'Price recalculation finished: %d product(s) updated, %d blocked because of invalid supplier pricing, %d failed.', $recalculated, $blocked, $failed ),
+                'message' => sprintf( 'Price recalculation finished: %d product(s) updated, %d kept with Price Review Required, %d failed.', $recalculated, $needs_review, $failed ),
             );
         }
 
@@ -5934,10 +5972,14 @@ final class TAQI_Life_Dropshipping {
                         $saved_pricing = is_array( $raw_supplier ) ? $this->pricing_breakdown( $raw_supplier ) : array();
                         $current_price = '' !== (string) $raw_price ? (float) $raw_price : null;
                         $price_issue   = '';
+                        $price_issue_color = '#b32d2e';
                         if ( $current_price !== null && isset( $saved_pricing['maximum'] ) && null !== $saved_pricing['maximum'] && $current_price > (float) $saved_pricing['maximum'] + 0.0001 ) {
                             $price_issue = 'Exceeds supplier maximum';
                         } elseif ( isset( $saved_pricing['selling'] ) && null === $saved_pricing['selling'] && ! empty( $saved_pricing['warning'] ) ) {
-                            $price_issue = 'Blocked by price safety';
+                            $price_issue = 'Price review required';
+                        } elseif ( isset( $saved_pricing['price_status'] ) && 'reduced_margin' === $saved_pricing['price_status'] ) {
+                            $price_issue = 'Maximum-capped · Reduced margin';
+                            $price_issue_color = '#b26200';
                         }
                         $product_type = 'variable' === get_post_meta( $product_id, '_taqi_product_type', true ) ? 'variable' : 'simple';
                         $supplier_id  = (string) get_post_meta( $product_id, '_taqi_supplier_id', true );
@@ -5966,7 +6008,7 @@ final class TAQI_Life_Dropshipping {
                                 <?php endif; ?>
                             </td>
                             <td><?php echo esc_html( $last_sync ? $last_sync : 'Not recorded yet' ); ?></td>
-                            <td><?php echo '' !== (string) $raw_price ? esc_html( number_format_i18n( (float) $raw_price, 2 ) ) : '—'; ?><?php if ( $price_issue ) : ?><br><strong style="color:#b32d2e;"><?php echo esc_html( $price_issue ); ?></strong><?php elseif ( $saved_pricing ) : ?><br><span style="color:#008a20;">Within limit</span><?php endif; ?></td>
+                            <td><?php echo '' !== (string) $raw_price ? esc_html( number_format_i18n( (float) $raw_price, 2 ) ) : '—'; ?><?php if ( $price_issue ) : ?><br><strong style="color:<?php echo esc_attr( $price_issue_color ); ?>;"><?php echo esc_html( $price_issue ); ?></strong><?php elseif ( $saved_pricing ) : ?><br><span style="color:#008a20;">Within limit</span><?php endif; ?></td>
                             <td class="taqi-status-actions">
                                 <a class="button" href="<?php echo esc_url( get_edit_post_link( $product_id ) ); ?>">Edit Product</a>
                                 <?php if ( 'publish' !== get_post_status( $product_id ) ) : ?>
