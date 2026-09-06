@@ -4459,6 +4459,33 @@ final class TAQI_Life_Dropshipping {
                     $used[ $image_id ] = true;
                 }
             }
+
+            // Protect images embedded directly in published content, not
+            // only featured images and product galleries.
+            $content = (string) get_post_field( 'post_content', $post_id );
+            if ( '' !== $content ) {
+                preg_match_all( '/wp-image-(\d+)/', $content, $embedded_ids );
+                foreach ( (array) ( isset( $embedded_ids[1] ) ? $embedded_ids[1] : array() ) as $image_id ) {
+                    $image_id = absint( $image_id );
+                    if ( $image_id ) {
+                        $used[ $image_id ] = true;
+                    }
+                }
+                preg_match_all( '/(?:attachment_id|attachment-id|image_id)[="\': ]+(\d+)/i', $content, $shortcode_ids );
+                foreach ( (array) ( isset( $shortcode_ids[1] ) ? $shortcode_ids[1] : array() ) as $image_id ) {
+                    $image_id = absint( $image_id );
+                    if ( $image_id ) {
+                        $used[ $image_id ] = true;
+                    }
+                }
+            }
+        }
+
+        foreach ( array( get_theme_mod( 'custom_logo' ), get_option( 'site_icon' ), get_option( 'woocommerce_placeholder_image' ), get_option( 'woocommerce_placeholder_image_id' ) ) as $system_image_id ) {
+            $system_image_id = absint( $system_image_id );
+            if ( $system_image_id ) {
+                $used[ $system_image_id ] = true;
+            }
         }
 
         return $used;
@@ -4496,7 +4523,7 @@ final class TAQI_Life_Dropshipping {
         return array_values( array_unique( $paths ) );
     }
 
-    private function media_cleanup_unused_supplier_attachments() {
+    private function media_cleanup_unused_attachments() {
         $unused    = array();
         $published = $this->media_cleanup_published_attachment_ids();
         $ids       = get_posts(
@@ -4510,11 +4537,11 @@ final class TAQI_Life_Dropshipping {
 
         foreach ( $ids as $attachment_id ) {
             $attachment_id = absint( $attachment_id );
-            if ( ! $attachment_id || ! $this->media_cleanup_attachment_is_supplier_image( $attachment_id ) || isset( $published[ $attachment_id ] ) ) {
+            $attachment = $attachment_id ? get_post( $attachment_id ) : false;
+            if ( ! $attachment || 'attachment' !== $attachment->post_type || 0 !== strpos( (string) $attachment->post_mime_type, 'image/' ) || isset( $published[ $attachment_id ] ) ) {
                 continue;
             }
 
-            $attachment = get_post( $attachment_id );
             if ( $attachment && $attachment->post_parent ) {
                 $parent = get_post( $attachment->post_parent );
                 if ( $parent && 'publish' === $parent->post_status ) {
@@ -4524,7 +4551,10 @@ final class TAQI_Life_Dropshipping {
 
             $paths = $this->media_cleanup_attachment_paths( $attachment_id );
             if ( $paths ) {
-                $unused[ $attachment_id ] = $paths;
+                $unused[ $attachment_id ] = array(
+                    'paths'    => $paths,
+                    'supplier' => $this->media_cleanup_attachment_is_supplier_image( $attachment_id ),
+                );
             }
         }
 
@@ -4564,9 +4594,10 @@ final class TAQI_Life_Dropshipping {
             return new WP_Error( 'taqi_media_scan_failed', 'The uploads directory could not be scanned: ' . $exception->getMessage() );
         }
 
-        $attachments     = $this->media_cleanup_unused_supplier_attachments();
+        $attachments     = $this->media_cleanup_unused_attachments();
         $attachment_files = array();
-        foreach ( $attachments as $paths ) {
+        foreach ( $attachments as $attachment ) {
+            $paths = isset( $attachment['paths'] ) ? $attachment['paths'] : array();
             foreach ( $paths as $path ) {
                 if ( ! in_array( $path, $attachment_files, true ) ) {
                     $attachment_files[] = $path;
@@ -4583,6 +4614,7 @@ final class TAQI_Life_Dropshipping {
         return array(
             'files'            => $files,
             'attachments'      => array_keys( $attachments ),
+            'attachment_details' => $attachments,
             'attachment_files' => $attachment_files,
             'bytes'            => $bytes,
             'scanned_at'       => current_time( 'mysql' ),
@@ -4598,6 +4630,7 @@ final class TAQI_Life_Dropshipping {
         $base_dir   = realpath( $scan['base_dir'] );
         $registered = $this->media_cleanup_registered_files();
         $published  = $this->media_cleanup_published_attachment_ids();
+        $allow_non_supplier = ! empty( $_POST['taqi_media_cleanup_delete_non_supplier'] );
         if ( ! $base_dir || ! is_dir( $base_dir ) ) {
             return new WP_Error( 'taqi_media_uploads_missing', 'The WordPress uploads directory could not be found.' );
         }
@@ -4609,7 +4642,8 @@ final class TAQI_Life_Dropshipping {
         foreach ( (array) ( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ) as $attachment_id ) {
             $attachment_id = absint( $attachment_id );
             $attachment    = get_post( $attachment_id );
-            if ( ! $attachment || 'attachment' !== $attachment->post_type || isset( $published[ $attachment_id ] ) || ! $this->media_cleanup_attachment_is_supplier_image( $attachment_id ) ) {
+            $is_supplier = $this->media_cleanup_attachment_is_supplier_image( $attachment_id );
+            if ( ! $attachment || 'attachment' !== $attachment->post_type || 0 !== strpos( (string) $attachment->post_mime_type, 'image/' ) || isset( $published[ $attachment_id ] ) || ( ! $is_supplier && ! $allow_non_supplier ) ) {
                 ++$skipped;
                 continue;
             }
@@ -4677,7 +4711,14 @@ final class TAQI_Life_Dropshipping {
                 $error = $scan->get_error_message();
             } else {
                 set_transient( $this->media_cleanup_transient_key(), $scan, HOUR_IN_SECONDS );
-                $notice = sprintf( 'Scan complete: %d unregistered image file(s) and %d supplier Media attachment(s) not used by published content found, using %s.', count( $scan['files'] ), count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ), size_format( $scan['bytes'] ) );
+                $supplier_count = 0;
+                foreach ( (array) ( isset( $scan['attachment_details'] ) ? $scan['attachment_details'] : array() ) as $attachment ) {
+                    if ( ! empty( $attachment['supplier'] ) ) {
+                        ++$supplier_count;
+                    }
+                }
+                $registered_count = count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() );
+                $notice = sprintf( 'Scan complete: %d unregistered image file(s) and %d unused registered Media image(s) found (%d supplier image(s)), using %s.', count( $scan['files'] ), $registered_count, $supplier_count, size_format( $scan['bytes'] ) );
             }
         }
 
@@ -4689,7 +4730,7 @@ final class TAQI_Life_Dropshipping {
                 $error = $result->get_error_message();
             } else {
                 delete_transient( $this->media_cleanup_transient_key() );
-                $notice = sprintf( 'Cleanup complete: %d unregistered image file(s) and %d supplier Media attachment(s) deleted, freeing %s. %d item(s) were skipped for safety.', $result['deleted'], $result['deleted_attachments'], size_format( $result['bytes'] ), $result['skipped'] );
+                $notice = sprintf( 'Cleanup complete: %d unregistered image file(s) and %d registered Media image(s) deleted, freeing %s. %d item(s) were skipped for safety.', $result['deleted'], $result['deleted_attachments'], size_format( $result['bytes'] ), $result['skipped'] );
             }
         }
 
@@ -4698,13 +4739,13 @@ final class TAQI_Life_Dropshipping {
         ?>
         <div class="wrap">
             <h1>TAQI LIFE Media Cleanup</h1>
-            <p>Find and remove unregistered image files and supplier Media attachments that are no longer used by published content.</p>
+            <p>Find unregistered image files and registered Media images that are no longer used by published content.</p>
             <?php if ( $notice ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $notice ); ?></p></div><?php endif; ?>
             <?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
 
             <div style="max-width:1000px;background:#fff;border:1px solid #dcdcde;border-left:4px solid #2271b1;padding:18px;margin:18px 0;">
                 <h2 style="margin-top:0;">1. Scan uploads</h2>
-                <p>This tool protects supplier images used by published posts/products, registered Media files used by published content, and ignores backups, logs, JetBackup folders, and non-standard upload files.</p>
+                <p>This tool checks standard upload images, unused registered Media images, embedded content references, featured images, product galleries, site icons, logos, WooCommerce placeholders, backups, logs, and JetBackup folders.</p>
                 <form method="post">
                     <?php wp_nonce_field( 'taqi_media_cleanup_scan', 'taqi_media_cleanup_nonce' ); ?>
                     <button type="submit" name="taqi_media_cleanup_scan" value="1" class="button button-primary">Scan For Orphan Images</button>
@@ -4714,11 +4755,13 @@ final class TAQI_Life_Dropshipping {
             <?php if ( is_array( $scan ) ) : ?>
                 <div style="max-width:1000px;background:#fff8e5;border:1px solid #dba617;border-left:4px solid #dba617;padding:18px;margin:18px 0;">
                     <h2 style="margin-top:0;">2. Review and delete</h2>
-                    <p><strong><?php echo esc_html( count( $scan['files'] ) ); ?></strong> unregistered image file(s) and <strong><?php echo esc_html( count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ) ); ?></strong> unused supplier Media attachment(s) found, using <strong><?php echo esc_html( size_format( $scan['bytes'] ) ); ?></strong>.</p>
+                    <?php $scan_supplier_count = 0; foreach ( (array) ( isset( $scan['attachment_details'] ) ? $scan['attachment_details'] : array() ) as $scan_attachment ) { if ( ! empty( $scan_attachment['supplier'] ) ) { ++$scan_supplier_count; } } ?>
+                    <p><strong><?php echo esc_html( count( $scan['files'] ) ); ?></strong> unregistered image file(s) and <strong><?php echo esc_html( count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ) ); ?></strong> unused registered Media image(s) found, including <strong><?php echo esc_html( $scan_supplier_count ); ?></strong> supplier image(s), using <strong><?php echo esc_html( size_format( $scan['bytes'] ) ); ?></strong>.</p>
                     <p class="description">Scan time: <?php echo esc_html( $scan['scanned_at'] ); ?>. The delete action re-checks the database before removing files.</p>
+                    <?php if ( ! empty( $scan['attachments'] ) && count( $scan['attachments'] ) > $scan_supplier_count ) : ?><p><label><input type="checkbox" name="taqi_media_cleanup_delete_non_supplier" value="1" form="taqi-media-cleanup-delete-form"> Also delete unused non-supplier registered Media images after review. This may include old manually uploaded images.</label></p><?php endif; ?>
                     <?php if ( $scan_files ) : ?>
                         <details style="margin:12px 0;"><summary>Show first 50 files</summary><ul style="max-height:260px;overflow:auto;background:#fff;padding:10px 10px 10px 30px;"><?php foreach ( array_slice( $scan_files, 0, 50 ) as $file ) : ?><li><code><?php echo esc_html( $file ); ?></code></li><?php endforeach; ?></ul></details>
-                        <form method="post" onsubmit="return confirm('Delete all scanned orphan files and unused supplier Media attachments? This cannot be undone.');">
+                        <form method="post" id="taqi-media-cleanup-delete-form" onsubmit="return confirm('Delete all scanned orphan files and unused registered Media images selected for deletion? This cannot be undone.');">
                             <?php wp_nonce_field( 'taqi_media_cleanup_delete', 'taqi_media_cleanup_delete_nonce' ); ?>
                             <button type="submit" name="taqi_media_cleanup_delete" value="1" class="button" style="color:#b32d2e;border-color:#b32d2e;">Delete Scanned Orphan Images</button>
                         </form>
