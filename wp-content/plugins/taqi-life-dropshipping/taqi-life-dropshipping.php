@@ -5715,7 +5715,22 @@ final class TAQI_Life_Dropshipping {
                             const body = new URLSearchParams(request.toString());
                             if (token) body.set('token', token);
                             const response = await fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: body.toString() });
-                            const result = await response.json();
+                            const rawResponse = await response.text();
+                            let result = null;
+                            try {
+                                result = JSON.parse(rawResponse);
+                            } catch (parseError) {
+                                if (/wp-login\.php|login-form|logged out/i.test(rawResponse)) {
+                                    throw new Error('Your WordPress admin session has expired. Log in again, refresh this page, and restart the deletion. Completed products remain deleted.');
+                                }
+                                if (/critical error|fatal error/i.test(rawResponse)) {
+                                    throw new Error('WordPress returned a critical server error while deleting. Check the WordPress error log or cPanel Error Log. Completed products remain deleted.');
+                                }
+                                throw new Error('The server returned an HTML or invalid response (HTTP ' + response.status + '). The AJAX request may be blocked by cPanel/security rules or the plugin may not be updated on the server. Completed products remain deleted.');
+                            }
+                            if (!result || typeof result !== 'object' || !Object.prototype.hasOwnProperty.call(result, 'success')) {
+                                throw new Error('The WordPress AJAX endpoint returned an invalid response (HTTP ' + response.status + '). Refresh the page and try again.');
+                            }
                             if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'The delete request failed.');
 
                             const data = result.data || {};
