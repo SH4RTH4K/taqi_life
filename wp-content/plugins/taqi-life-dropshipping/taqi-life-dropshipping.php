@@ -4259,20 +4259,35 @@ final class TAQI_Life_Dropshipping {
 
         $token = isset( $_POST['token'] ) ? preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) wp_unslash( $_POST['token'] ) ) : '';
         $key   = $token ? 'taqi_delete_imported_' . absint( get_current_user_id() ) . '_' . substr( $token, 0, 32 ) : '';
+
+        if ( ! empty( $_POST['cancel'] ) ) {
+            if ( $key ) {
+                delete_transient( $key );
+            }
+            $this->send_batch_json( true, array( 'cancelled' => true, 'message' => 'The remaining deletion queue was cancelled.' ) );
+        }
+
         $state = $key ? get_transient( $key ) : false;
 
         if ( ! is_array( $state ) || empty( $state['ids'] ) ) {
             $delete_all = ! empty( $_POST['delete_all'] );
-            if ( $delete_all ) {
+            $delete_filtered = ! empty( $_POST['delete_filtered'] );
+            if ( $delete_all || $delete_filtered ) {
+                $post_status = $delete_all ? 'any' : array( 'publish', 'draft', 'pending', 'private' );
+                $meta_query  = array(
+                    array( 'key' => '_taqi_supplier', 'value' => $this->supplier_key() ),
+                );
+                if ( $delete_filtered && ! empty( $_POST['supplier_category'] ) ) {
+                    $meta_query[] = array( 'key' => '_taqi_supplier_category_name', 'value' => sanitize_text_field( wp_unslash( $_POST['supplier_category'] ) ), 'compare' => 'LIKE' );
+                }
                 $ids = get_posts(
                     array(
                         'post_type'      => array( 'taqi_product', 'product' ),
-                        'post_status'    => 'any',
+                        'post_status'    => $post_status,
                         'fields'         => 'ids',
                         'posts_per_page' => -1,
-                        'meta_query'     => array(
-                            array( 'key' => '_taqi_supplier', 'value' => $this->supplier_key() ),
-                        ),
+                        's'              => $delete_filtered && ! empty( $_POST['search'] ) ? sanitize_text_field( wp_unslash( $_POST['search'] ) ) : '',
+                        'meta_query'     => $meta_query,
                     )
                 );
             } else {
@@ -5474,6 +5489,7 @@ final class TAQI_Life_Dropshipping {
                 <button type="submit" name="taqi_bulk_status_action" value="publish" class="button button-primary" onclick="return taqiConfirmImportedBatch('publish');">Publish Selected</button>
                 <button type="submit" name="taqi_bulk_status_action" value="unpublish" class="button" onclick="return taqiConfirmImportedBatch('unpublish');">Unpublish Selected</button>
                 <button type="button" id="taqi-delete-selected-products-button" class="button button-link-delete">Delete Selected Products</button>
+                <?php if ( $search || $category_filter ) : ?><button type="button" id="taqi-delete-filtered-products-button" class="button button-link-delete">Delete Filtered Products</button><?php endif; ?>
                 <button type="button" id="taqi-delete-all-products-button" class="button button-link-delete">Delete All Imported Products</button>
                 <span class="description">Publish/unpublish actions apply to the current page. Delete All includes every imported product for this supplier, including unpublished and trashed records.</span>
             </form>
@@ -5482,6 +5498,7 @@ final class TAQI_Life_Dropshipping {
                 <p><strong id="taqi-imported-delete-progress-label">Deleting imported products…</strong></p>
                 <progress id="taqi-imported-delete-progress-bar" value="0" max="1" style="width:100%;height:20px;"></progress>
                 <p id="taqi-imported-delete-progress-detail" class="description">The page will refresh when the operation is complete. Keep this tab open.</p>
+                <button type="button" id="taqi-cancel-imported-delete-button" class="button">Cancel Delete</button>
             </div>
 
             <div class="taqi-status-table-wrap"><table class="widefat striped taqi-status-table">
@@ -5632,7 +5649,9 @@ final class TAQI_Life_Dropshipping {
                 const importedClearButton = document.getElementById('taqi-imported-clear-button');
                 const importedSelectedCount = document.getElementById('taqi-imported-selected-count');
                 const deleteSelectedButton = document.getElementById('taqi-delete-selected-products-button');
+                const deleteFilteredButton = document.getElementById('taqi-delete-filtered-products-button');
                 const deleteAllButton = document.getElementById('taqi-delete-all-products-button');
+                const cancelDeleteButton = document.getElementById('taqi-cancel-imported-delete-button');
                 const deleteProgress = document.getElementById('taqi-imported-delete-progress');
                 const deleteProgressLabel = document.getElementById('taqi-imported-delete-progress-label');
                 const deleteProgressBar = document.getElementById('taqi-imported-delete-progress-bar');
@@ -5682,32 +5701,55 @@ final class TAQI_Life_Dropshipping {
                 };
 
                 function setImportedDeleteButtonsDisabled(disabled) {
-                    [deleteSelectedButton, deleteAllButton, importedSelectAllButton, importedClearButton].forEach(function (button) {
+                    [deleteSelectedButton, deleteFilteredButton, deleteAllButton, importedSelectAllButton, importedClearButton].forEach(function (button) {
                         if (button) button.disabled = disabled;
                     });
                 }
 
-                async function deleteImportedProductsInBatches(deleteAll) {
+                let deleteCancelRequested = false;
+                let activeDeleteToken = '';
+
+                async function cancelImportedDeletionQueue() {
+                    if (!activeDeleteToken) return;
+                    const cancelBody = new URLSearchParams();
+                    cancelBody.append('action', 'taqi_batch_delete_imported_products');
+                    cancelBody.append('nonce', <?php echo wp_json_encode( wp_create_nonce( 'taqi_batch_delete_imported' ) ); ?>);
+                    cancelBody.append('token', activeDeleteToken);
+                    cancelBody.append('cancel', '1');
+                    await fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: cancelBody.toString() });
+                }
+
+                async function deleteImportedProductsInBatches(scope) {
+                    const deleteAll = 'all' === scope;
+                    const deleteFiltered = 'filtered' === scope;
                     const selected = Array.from(document.querySelectorAll('.taqi-imported-check:checked')).map(function (checkbox) { return checkbox.value; });
-                    if (!deleteAll && !selected.length) {
+                    if ('selected' === scope && !selected.length) {
                         window.alert('Select at least one product first.');
                         return;
                     }
                     const confirmation = deleteAll
                         ? 'Permanently delete ALL imported products and their unused supplier images? This cannot be undone.'
-                        : 'Permanently delete all selected products and their unused supplier images? This cannot be undone.';
+                        : (deleteFiltered ? 'Permanently delete all products matching the current filters and their unused supplier images? This cannot be undone.' : 'Permanently delete all selected products and their unused supplier images? This cannot be undone.');
                     if (!window.confirm(confirmation)) return;
 
+                    deleteCancelRequested = false;
+                    activeDeleteToken = '';
                     setImportedDeleteButtonsDisabled(true);
+                    if (cancelDeleteButton) cancelDeleteButton.disabled = false;
                     if (deleteProgress) deleteProgress.style.display = 'block';
-                    if (deleteProgressLabel) deleteProgressLabel.textContent = deleteAll ? 'Deleting all imported products…' : 'Deleting selected imported products…';
+                    if (deleteProgressLabel) deleteProgressLabel.textContent = deleteAll ? 'Deleting all imported products…' : (deleteFiltered ? 'Deleting filtered imported products…' : 'Deleting selected imported products…');
                     if (deleteProgressDetail) deleteProgressDetail.textContent = 'Preparing a safe one-product-at-a-time deletion queue…';
 
                     const request = new URLSearchParams();
                     request.append('action', 'taqi_batch_delete_imported_products');
                     request.append('nonce', <?php echo wp_json_encode( wp_create_nonce( 'taqi_batch_delete_imported' ) ); ?>);
                     request.append('delete_all', deleteAll ? '1' : '0');
-                    if (!deleteAll) selected.forEach(function (productId) { request.append('product_ids[]', productId); });
+                    request.append('delete_filtered', deleteFiltered ? '1' : '0');
+                    if (deleteFiltered) {
+                        request.append('search', <?php echo wp_json_encode( $search ); ?>);
+                        request.append('supplier_category', <?php echo wp_json_encode( $category_filter ); ?>);
+                    }
+                    if (!deleteAll && !deleteFiltered) selected.forEach(function (productId) { request.append('product_ids[]', productId); });
 
                     let token = '';
                     try {
@@ -5735,16 +5777,26 @@ final class TAQI_Life_Dropshipping {
 
                             const data = result.data || {};
                             token = data.token || token;
+                            activeDeleteToken = token;
                             if (deleteProgressBar) {
                                 deleteProgressBar.max = Math.max(1, Number(data.total || 0));
                                 deleteProgressBar.value = Number(data.completed || 0);
                             }
                             if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deleting imported products… ' + Number(data.completed || 0) + ' / ' + Number(data.total || 0);
                             if (deleteProgressDetail) deleteProgressDetail.textContent = Number(data.deleted || 0) + ' deleted, ' + Number(data.failed || 0) + ' skipped or failed. Each request handles one product to avoid timeout.';
+                            if (deleteCancelRequested) {
+                                await cancelImportedDeletionQueue();
+                                if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deletion cancelled.';
+                                if (deleteProgressDetail) deleteProgressDetail.textContent = Number(data.deleted || 0) + ' product(s) completed. The remaining queue was cancelled.';
+                                if (cancelDeleteButton) cancelDeleteButton.disabled = true;
+                                setImportedDeleteButtonsDisabled(false);
+                                break;
+                            }
                             if (data.done) {
                                 const warning = data.failed ? ' ' + data.failed + ' item(s) were skipped or failed.' : '';
                                 if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deletion complete.';
                                 if (deleteProgressDetail) deleteProgressDetail.textContent = data.deleted + ' product(s) deleted with unused supplier images.' + warning + ' Reloading…';
+                                if (cancelDeleteButton) cancelDeleteButton.disabled = true;
                                 window.setTimeout(function () { window.location.reload(); }, 1200);
                                 break;
                             }
@@ -5754,12 +5806,20 @@ final class TAQI_Life_Dropshipping {
                     } catch (error) {
                         if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deletion paused.';
                         if (deleteProgressDetail) deleteProgressDetail.textContent = error.message + ' Refresh the page and start again; completed products remain deleted.';
+                        if (cancelDeleteButton) cancelDeleteButton.disabled = true;
                         setImportedDeleteButtonsDisabled(false);
                     }
                 }
 
-                if (deleteSelectedButton) deleteSelectedButton.addEventListener('click', function () { deleteImportedProductsInBatches(false); });
-                if (deleteAllButton) deleteAllButton.addEventListener('click', function () { deleteImportedProductsInBatches(true); });
+                if (deleteSelectedButton) deleteSelectedButton.addEventListener('click', function () { deleteImportedProductsInBatches('selected'); });
+                if (deleteFilteredButton) deleteFilteredButton.addEventListener('click', function () { deleteImportedProductsInBatches('filtered'); });
+                if (deleteAllButton) deleteAllButton.addEventListener('click', function () { deleteImportedProductsInBatches('all'); });
+                if (cancelDeleteButton) cancelDeleteButton.addEventListener('click', function () {
+                    deleteCancelRequested = true;
+                    cancelDeleteButton.disabled = true;
+                    if (deleteProgressLabel) deleteProgressLabel.textContent = 'Cancelling after the current product…';
+                    if (deleteProgressDetail) deleteProgressDetail.textContent = 'The current request will finish safely, then the remaining queue will be cancelled.';
+                });
                 const modal = document.getElementById('taqi-delete-modal');
                 const nameBox = document.getElementById('taqi-delete-product-name');
                 const cancelBtn = document.getElementById('taqi-delete-cancel');
