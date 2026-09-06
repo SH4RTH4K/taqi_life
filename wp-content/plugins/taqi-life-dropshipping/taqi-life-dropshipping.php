@@ -1873,7 +1873,14 @@ final class TAQI_Life_Dropshipping {
                     }
                 }
             }
-            $image_id    = $existing_id ? $existing_id : $this->sideload_image( $url, $product_id, $name );
+            try {
+                $image_id = $existing_id ? $existing_id : $this->sideload_image( $url, $product_id, $name );
+            } catch ( Throwable $exception ) {
+                // A bad supplier image must not abort the whole product
+                // import. The product remains linked and can be retried from
+                // the separate Image Sync action later.
+                $image_id = new WP_Error( 'taqi_image_exception', 'Supplier image could not be downloaded.' );
+            }
             if ( is_wp_error( $image_id ) || ! $image_id ) {
                 continue;
             }
@@ -4489,6 +4496,87 @@ final class TAQI_Life_Dropshipping {
         );
     }
 
+    /**
+     * Convert a shutdown-level PHP fatal into a resumable batch response.
+     *
+     * Throwable catches do not handle memory exhaustion, parse errors, or
+     * other shutdown fatals. The checkpoint is already stored before work
+     * starts, so this handler can safely skip only the product that was being
+     * processed and let the browser continue with the next supplier item.
+     */
+    private function register_catalog_batch_shutdown_handler( &$checkpoint ) {
+        $plugin = $this;
+        register_shutdown_function(
+            function() use ( $plugin, &$checkpoint ) {
+                $last_error = error_get_last();
+                $fatal_types = array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR );
+                if ( ! is_array( $last_error ) || empty( $last_error['type'] ) || ! in_array( (int) $last_error['type'], $fatal_types, true ) ) {
+                    return;
+                }
+
+                $message = isset( $last_error['message'] ) ? wp_strip_all_tags( (string) $last_error['message'] ) : 'Unknown PHP fatal error.';
+                $file    = isset( $last_error['file'] ) ? basename( (string) $last_error['file'] ) : 'unknown file';
+                $line    = isset( $last_error['line'] ) ? absint( $last_error['line'] ) : 0;
+                $active  = ! empty( $checkpoint['current_item_active'] );
+                $current = ! empty( $checkpoint['current_product_id'] ) ? ' while processing supplier product ' . sanitize_text_field( (string) $checkpoint['current_product_id'] ) : '';
+                $detail  = 'WordPress stopped this batch request' . $current . ' at ' . $file . ( $line ? ':' . $line : '' ) . ': ' . $message;
+
+                error_log( '[TAQI Dropshipping] ' . $detail );
+
+                $checkpoint['errors'] = array_slice(
+                    array_merge( isset( $checkpoint['errors'] ) ? (array) $checkpoint['errors'] : array(), array( $detail ) ),
+                    -20
+                );
+                $checkpoint['last_error'] = $detail;
+
+                if ( $active ) {
+                    // The current product may have been partially created. On
+                    // resume, skip it rather than repeating the same fatal.
+                    $checkpoint['failed']               = absint( isset( $checkpoint['failed'] ) ? $checkpoint['failed'] : 0 ) + 1;
+                    $checkpoint['item']                 = absint( isset( $checkpoint['item'] ) ? $checkpoint['item'] : 0 ) + 1;
+                    $checkpoint['current_item_active']  = false;
+                    $checkpoint['current_product_id']   = '';
+                    $checkpoint['status']               = 'running';
+                    $plugin->save_catalog_batch_checkpoint( $checkpoint );
+                } else {
+                    $checkpoint['status'] = 'running';
+                    $plugin->save_catalog_batch_checkpoint( $checkpoint );
+                }
+
+                while ( ob_get_level() > 0 ) {
+                    if ( ! @ob_end_clean() ) {
+                        break;
+                    }
+                }
+
+                if ( ! headers_sent() ) {
+                    if ( function_exists( 'status_header' ) ) {
+                        status_header( $active ? 200 : 500 );
+                    } else {
+                        http_response_code( $active ? 200 : 500 );
+                    }
+                    header( 'Content-Type: application/json; charset=' . get_option( 'blog_charset', 'UTF-8' ) );
+                    header( 'X-TAQI-Batch-Recovered: ' . ( $active ? 'yes' : 'no' ) );
+                }
+
+                echo wp_json_encode(
+                    array(
+                        'success' => $active,
+                        'data'    => array(
+                            'fatal_recovered' => $active,
+                            'message'         => $active
+                                ? 'One supplier product was skipped after a server fatal. The batch can continue.'
+                                : 'The server stopped before the current supplier product could be completed. Resume from the saved position after checking the WordPress error log.',
+                            'checkpoint'      => $checkpoint,
+                        ),
+                    ),
+                    JSON_INVALID_UTF8_SUBSTITUTE
+                );
+                exit;
+            }
+        );
+    }
+
     public function ajax_process_all_pages() {
         if ( ! current_user_can( 'manage_options' ) ) {
             $this->send_batch_json( false, array( 'message' => 'Permission denied.' ), 403 );
@@ -4592,6 +4680,7 @@ final class TAQI_Life_Dropshipping {
         $checkpoint['page']   = $page;
         $checkpoint['item']   = $item;
         $this->save_catalog_batch_checkpoint( $checkpoint );
+        $this->register_catalog_batch_shutdown_handler( $checkpoint );
 
         set_time_limit( 120 );
         $data = $this->api_request_products( $page, $supplier_category_filter );
@@ -4645,6 +4734,11 @@ final class TAQI_Life_Dropshipping {
             $product     = $products[ $batch_item ];
             $supplier_id = $this->supplier_product_id( $product );
             $result      = null;
+            $checkpoint['page']                = $page;
+            $checkpoint['item']                = $batch_item;
+            $checkpoint['current_item_active'] = true;
+            $checkpoint['current_product_id']  = (string) $supplier_id;
+            $this->save_catalog_batch_checkpoint( $checkpoint );
             try {
                 if ( '' === $supplier_id ) {
                     ++$skipped;
@@ -4675,6 +4769,9 @@ final class TAQI_Life_Dropshipping {
             } elseif ( null !== $result ) {
                 ++$processed;
             }
+
+            $checkpoint['current_item_active'] = false;
+            $checkpoint['current_product_id']  = '';
 
             // Advance the durable cursor after every product, not merely at
             // the end of a multi-product request. A mid-request PHP failure
@@ -5856,6 +5953,7 @@ final class TAQI_Life_Dropshipping {
                 const firewallMessage = 'The hosting firewall blocked this batch request. Ask your host to allowlist /wp-admin/admin-ajax.php for logged-in administrator requests or disable Imunify360 bot protection for this endpoint.';
                 if (/One moment, please|request is being verified|Imunify360|bot-protection|IPs used for automation/i.test(raw)) throw new Error(firewallMessage);
                 if (/502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i.test(raw)) throw new Error('The hosting server stopped this batch request because it took too long or was temporarily unavailable.');
+                if (/There has been a critical error on this website|wp-includes\/class-wp-fatal-error-handler/i.test(raw)) throw new Error('WordPress encountered a critical error during this batch request. Check wp-content/debug.log or the cPanel Error Log, then use Resume from saved position.');
                 let result;
                 try {
                     result = JSON.parse(raw);
