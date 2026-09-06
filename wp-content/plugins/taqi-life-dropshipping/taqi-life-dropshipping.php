@@ -63,6 +63,62 @@ final class TAQI_Life_Product {
         if ( isset( $this->data['category_ids'] ) ) { wp_set_object_terms( $this->id, $this->data['category_ids'], 'taqi_category', false ); }
         return $this->id;
     }
+
+    /**
+     * Remove supplier-managed images while keeping the product itself.
+     *
+     * Local media is intentionally left alone. Supplier attachments are
+     * marked when they are downloaded by TAQI LIFE, and shared attachments
+     * are retained when another post still references them.
+     */
+    public function delete_supplier_images() {
+        $children  = $this->get_children();
+        $post_ids  = array_values( array_unique( array_merge( array( $this->id ), $children ) ) );
+        $image_ids = array();
+
+        foreach ( $post_ids as $post_id ) {
+            $image_ids[] = absint( get_post_thumbnail_id( $post_id ) );
+            $image_ids   = array_merge( $image_ids, array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) ) );
+        }
+        $image_ids = array_values( array_unique( array_filter( $image_ids ) ) );
+
+        $supplier_image_ids = array();
+        foreach ( $image_ids as $image_id ) {
+            if ( get_post_meta( $image_id, '_taqi_supplier_image_url', true ) ) {
+                $supplier_image_ids[] = $image_id;
+            }
+        }
+
+        if ( empty( $supplier_image_ids ) ) {
+            return 0;
+        }
+
+        // Remove references first so the attachment can be deleted without
+        // leaving stale thumbnail/gallery IDs on the unpublished product.
+        foreach ( $post_ids as $post_id ) {
+            if ( in_array( absint( get_post_thumbnail_id( $post_id ) ), $supplier_image_ids, true ) ) {
+                delete_post_thumbnail( $post_id );
+            }
+
+            $gallery_ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+            $gallery_ids = array_values( array_diff( $gallery_ids, $supplier_image_ids ) );
+            if ( $gallery_ids ) {
+                update_post_meta( $post_id, '_taqi_gallery_image_ids', $gallery_ids );
+            } else {
+                delete_post_meta( $post_id, '_taqi_gallery_image_ids' );
+            }
+        }
+
+        $deleted = 0;
+        foreach ( $supplier_image_ids as $image_id ) {
+            if ( ! $this->image_used_elsewhere( $image_id, $post_ids ) && wp_delete_attachment( $image_id, true ) ) {
+                ++$deleted;
+            }
+        }
+
+        return $deleted;
+    }
+
     /**
      * Delete the product and the image attachments belonging to it.
      *
@@ -190,7 +246,36 @@ final class TAQI_Life_Dropshipping {
         add_action( 'init', array( $this, 'register_content_types' ) );
         add_action( 'admin_menu', array( $this, 'admin_menu' ) );
         add_action( 'add_meta_boxes_taqi_product', array( $this, 'add_product_meta_box' ) );
+        add_action( 'transition_post_status', array( $this, 'handle_product_status_transition' ), 10, 3 );
         add_action( 'wp_ajax_taqi_process_all_pages', array( $this, 'ajax_process_all_pages' ) );
+    }
+
+    /**
+     * Release supplier media when a published product is unpublished, and
+     * restore it from the saved supplier payload when published again.
+     */
+    public function handle_product_status_transition( $new_status, $old_status, $post ) {
+        if ( ! $post || 'taqi_product' !== $post->post_type || $new_status === $old_status ) {
+            return;
+        }
+
+        $product = new TAQI_Life_Product( 'simple', $post->ID );
+        if ( 'publish' === $old_status && 'publish' !== $new_status ) {
+            $product->delete_supplier_images();
+            return;
+        }
+
+        if ( 'publish' !== $new_status || 'publish' === $old_status ) {
+            return;
+        }
+
+        $raw_payload = get_post_meta( $post->ID, '_taqi_supplier_raw_payload', true );
+        $supplier_product = json_decode( (string) $raw_payload, true );
+        if ( ! is_array( $supplier_product ) ) {
+            return;
+        }
+
+        $this->sync_product_images( $product, $supplier_product, $product->get_name(), true );
     }
 
     public function register_content_types() {
@@ -4650,6 +4735,42 @@ final class TAQI_Life_Dropshipping {
     }
 
     private function handle_imported_product_management() {
+        if ( ! empty( $_POST['taqi_cleanup_unpublished_images'] ) ) {
+            check_admin_referer( 'taqi_cleanup_unpublished_images', 'taqi_cleanup_unpublished_images_nonce' );
+
+            $product_ids = get_posts(
+                array(
+                    'post_type'      => 'taqi_product',
+                    'post_status'    => array( 'draft', 'pending', 'private', 'trash' ),
+                    'fields'         => 'ids',
+                    'posts_per_page' => -1,
+                    'meta_query'     => array(
+                        array( 'key' => '_taqi_supplier', 'value' => $this->supplier_key() ),
+                    ),
+                )
+            );
+            $checked_products = 0;
+            $deleted_images   = 0;
+
+            foreach ( $product_ids as $product_id ) {
+                if ( ! current_user_can( 'edit_post', $product_id ) ) {
+                    continue;
+                }
+
+                ++$checked_products;
+                $deleted = ( new TAQI_Life_Product( 'simple', $product_id ) )->delete_supplier_images();
+                $deleted_images += $deleted;
+            }
+
+            return array(
+                'message' => sprintf(
+                    'Unpublished image cleanup finished: %d product(s) checked and %d unused supplier image(s) deleted. Shared images and local uploads were preserved.',
+                    $checked_products,
+                    $deleted_images
+                ),
+            );
+        }
+
         if ( ! empty( $_POST['taqi_bulk_status_action'] ) ) {
             check_admin_referer( 'taqi_bulk_status_action', 'taqi_bulk_status_nonce' );
             $action = sanitize_key( wp_unslash( $_POST['taqi_bulk_status_action'] ) );
@@ -4789,7 +4910,16 @@ final class TAQI_Life_Dropshipping {
                 <p>Products linked to <?php echo esc_html( $this->settings()['supplier_name'] ); ?> through TAQI LIFE Dropshipping.</p>
 
             <div class="notice notice-info inline taqi-sync-note">
-                <p><strong>Safe sync behavior:</strong> Re-sync refreshes supplier price, sale price, stock, mapped categories and supplier metadata. Your local product title, description and downloaded images are preserved; missing supplier images are added when safely detected. <strong>Cancel Sync</strong> keeps the WooCommerce product but stops synchronization. <strong>Delete</strong> permanently deletes only the local WooCommerce product; it never deletes anything from the supplier API.</p>
+                <p><strong>Safe sync behavior:</strong> Re-sync refreshes supplier price, sale price, stock, mapped categories and supplier metadata. Your local product title, description and downloaded images are preserved; missing supplier images are added when safely detected. <strong>Unpublish</strong> removes TAQI LIFE supplier images from Media to save storage; publishing again downloads them from the saved supplier data. <strong>Cancel Sync</strong> keeps the WooCommerce product but stops synchronization. <strong>Delete</strong> permanently deletes the local product and its unused images; it never deletes anything from the supplier API.</p>
+            </div>
+
+            <div style="background:#fff8e5;border:1px solid #dba617;border-left:4px solid #dba617;padding:14px 16px;margin:18px 0;max-width:1100px;">
+                <strong>Need to free Media storage now?</strong>
+                <p style="margin:6px 0 10px;">Clean supplier images from all existing Draft, Pending, Private, and Trashed products. Shared images and manually uploaded local images will be kept.</p>
+                <form method="post" onsubmit="return confirm('Delete unused supplier images from all unpublished products? This cannot be undone.');">
+                    <?php wp_nonce_field( 'taqi_cleanup_unpublished_images', 'taqi_cleanup_unpublished_images_nonce' ); ?>
+                    <button type="submit" name="taqi_cleanup_unpublished_images" value="1" class="button">Clean Images From Unpublished Products</button>
+                </form>
             </div>
 
             <form method="get" class="taqi-status-toolbar" style="position:static;">
