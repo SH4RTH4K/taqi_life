@@ -261,6 +261,7 @@ final class TAQI_Life_Dropshipping {
         add_action( 'transition_post_status', array( $this, 'handle_product_status_transition' ), 10, 3 );
         add_action( 'wp_ajax_taqi_process_all_pages', array( $this, 'ajax_process_all_pages' ) );
         add_action( 'wp_ajax_taqi_batch_delete_imported_products', array( $this, 'ajax_batch_delete_imported_products' ) );
+        add_action( 'wp_ajax_taqi_scan_storage_location', array( $this, 'ajax_scan_storage_location' ) );
     }
 
     /**
@@ -333,6 +334,15 @@ final class TAQI_Life_Dropshipping {
             'manage_options',
             'taqi-dropshipping-media',
             array( $this, 'media_cleanup_page' )
+        );
+
+        add_submenu_page(
+            'taqi-dropshipping',
+            'Storage Usage',
+            'Storage Usage',
+            'manage_options',
+            'taqi-dropshipping-storage',
+            array( $this, 'storage_usage_page' )
         );
 
         add_submenu_page(
@@ -4770,6 +4780,178 @@ final class TAQI_Life_Dropshipping {
                     <?php endif; ?>
                 </div>
             <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    private function storage_usage_locations() {
+        return array(
+            'wordpress-core' => array( 'label' => 'WordPress Core', 'path' => ABSPATH, 'excludes' => array( 'wp-content', '.git' ) ),
+            'git-metadata'  => array( 'label' => 'Git Repository Metadata', 'path' => ABSPATH . '.git', 'excludes' => array() ),
+            'uploads'        => array( 'label' => 'wp-content/uploads', 'path' => WP_CONTENT_DIR . '/uploads', 'excludes' => array() ),
+            'plugins'        => array( 'label' => 'wp-content/plugins', 'path' => WP_PLUGIN_DIR, 'excludes' => array() ),
+            'themes'         => array( 'label' => 'wp-content/themes', 'path' => get_theme_root(), 'excludes' => array() ),
+            'mu-plugins'     => array( 'label' => 'wp-content/mu-plugins', 'path' => WPMU_PLUGIN_DIR, 'excludes' => array() ),
+            'content-other'  => array( 'label' => 'Other wp-content', 'path' => WP_CONTENT_DIR, 'excludes' => array( 'uploads', 'plugins', 'themes', 'mu-plugins' ) ),
+        );
+    }
+
+    private function storage_usage_scan_location( $location_key ) {
+        $locations = $this->storage_usage_locations();
+        if ( ! isset( $locations[ $location_key ] ) ) {
+            return new WP_Error( 'taqi_storage_invalid_location', 'Invalid storage location.' );
+        }
+
+        $definition = $locations[ $location_key ];
+        $base_dir   = ! empty( $definition['path'] ) ? realpath( $definition['path'] ) : false;
+        $result     = array( 'key' => $location_key, 'label' => $definition['label'], 'path' => $definition['path'], 'exists' => (bool) $base_dir, 'bytes' => 0, 'files' => 0, 'directories' => 0, 'subfolders' => array(), 'largest' => array() );
+        if ( ! $base_dir || ! is_dir( $base_dir ) ) {
+            return $result;
+        }
+
+        $base_dir = untrailingslashit( wp_normalize_path( $base_dir ) );
+        $excludes = array_map( function ( $exclude ) { return trim( wp_normalize_path( $exclude ), '/' ); }, (array) $definition['excludes'] );
+        try {
+            $directory_iterator = new RecursiveDirectoryIterator( $base_dir, FilesystemIterator::SKIP_DOTS );
+            $filtered_iterator = new RecursiveCallbackFilterIterator( $directory_iterator, function ( $current ) use ( $base_dir, $excludes ) {
+                $relative = ltrim( str_replace( '\\', '/', substr( wp_normalize_path( $current->getPathname() ), strlen( $base_dir ) ) ), '/' );
+                if ( ! $current->isDir() ) {
+                    return true;
+                }
+                foreach ( $excludes as $exclude ) {
+                    if ( '' !== $exclude && ( $relative === $exclude || 0 === strpos( $relative, $exclude . '/' ) ) ) {
+                        return false;
+                    }
+                }
+                return true;
+            } );
+            $iterator = new RecursiveIteratorIterator( $filtered_iterator, RecursiveIteratorIterator::LEAVES_ONLY );
+            foreach ( $iterator as $file ) {
+                if ( ! $file->isFile() || $file->isLink() ) {
+                    continue;
+                }
+                $size     = (int) $file->getSize();
+                $relative = ltrim( str_replace( '\\', '/', substr( wp_normalize_path( $file->getPathname() ), strlen( $base_dir ) ) ), '/' );
+                $parts    = explode( '/', $relative );
+                $group    = isset( $parts[0] ) && '' !== $parts[0] ? $parts[0] : '(root)';
+                if ( ! isset( $result['subfolders'][ $group ] ) ) {
+                    $result['subfolders'][ $group ] = array( 'bytes' => 0, 'files' => 0 );
+                }
+                $result['subfolders'][ $group ]['bytes'] += $size;
+                ++$result['subfolders'][ $group ]['files'];
+                $result['bytes'] += $size;
+                ++$result['files'];
+                $result['largest'][] = array( 'path' => $relative, 'bytes' => $size );
+                if ( count( $result['largest'] ) > 30 ) {
+                    usort( $result['largest'], function ( $left, $right ) { return $right['bytes'] <=> $left['bytes']; } );
+                    $result['largest'] = array_slice( $result['largest'], 0, 20 );
+                }
+            }
+        } catch ( Exception $exception ) {
+            $result['error'] = $exception->getMessage();
+        }
+
+        foreach ( $result['subfolders'] as $folder => $summary ) {
+            $result['subfolders'][ $folder ]['size'] = size_format( $summary['bytes'] );
+        }
+        usort( $result['largest'], function ( $left, $right ) { return $right['bytes'] <=> $left['bytes']; } );
+        $result['largest'] = array_slice( $result['largest'], 0, 10 );
+        uasort( $result['subfolders'], function ( $left, $right ) { return $right['bytes'] <=> $left['bytes']; } );
+        return $result;
+    }
+
+    private function storage_usage_database_summary() {
+        global $wpdb;
+        $tables = array();
+        $total  = 0;
+        foreach ( (array) $wpdb->get_results( 'SHOW TABLE STATUS', ARRAY_A ) as $row ) {
+            $bytes = absint( isset( $row['Data_length'] ) ? $row['Data_length'] : 0 ) + absint( isset( $row['Index_length'] ) ? $row['Index_length'] : 0 );
+            $tables[] = array( 'name' => isset( $row['Name'] ) ? $row['Name'] : '', 'bytes' => $bytes, 'size' => size_format( $bytes ), 'rows' => absint( isset( $row['Rows'] ) ? $row['Rows'] : 0 ) );
+            $total += $bytes;
+        }
+        usort( $tables, function ( $left, $right ) { return $right['bytes'] <=> $left['bytes']; } );
+        return array( 'bytes' => $total, 'size' => size_format( $total ), 'tables' => array_slice( $tables, 0, 20 ) );
+    }
+
+    public function ajax_scan_storage_location() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            $this->send_batch_json( false, array( 'message' => 'Permission denied.' ), 403 );
+        }
+        $nonce = isset( $_POST['nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['nonce'] ) ) : '';
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'taqi_storage_usage' ) ) {
+            $this->send_batch_json( false, array( 'message' => 'The security check failed. Refresh the page and try again.' ), 403 );
+        }
+        $location_key = isset( $_POST['location'] ) ? sanitize_key( wp_unslash( $_POST['location'] ) ) : '';
+        set_time_limit( 90 );
+        $result = $this->storage_usage_scan_location( $location_key );
+        if ( is_wp_error( $result ) ) {
+            $this->send_batch_json( false, array( 'message' => $result->get_error_message() ), 400 );
+        }
+        $this->send_batch_json( true, $result );
+    }
+
+    public function storage_usage_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        $locations = $this->storage_usage_locations();
+        $database  = $this->storage_usage_database_summary();
+        ?>
+        <div class="wrap" id="taqi-storage-usage-page">
+            <h1>TAQI LIFE Storage Usage</h1>
+            <p>Compile WordPress storage by location before deleting files. Each filesystem location is scanned in a separate request.</p>
+            <div class="notice notice-info inline"><p><strong>Important:</strong> This reports the WordPress installation and database. cPanel may also count email, server logs, account backups, and files outside this WordPress directory.</p></div>
+            <p><button type="button" class="button button-primary" id="taqi-storage-scan-button">Scan Storage Usage</button> <span id="taqi-storage-scan-status" class="description"></span></p>
+            <table class="widefat striped" style="max-width:1200px;margin-top:16px;">
+                <thead><tr><th>Location</th><th>Path</th><th>Files</th><th>Usage</th><th>Largest subfolder/files</th></tr></thead>
+                <tbody id="taqi-storage-results">
+                    <?php foreach ( $locations as $location_key => $location ) : ?><tr data-location="<?php echo esc_attr( $location_key ); ?>"><td><strong><?php echo esc_html( $location['label'] ); ?></strong></td><td><code><?php echo esc_html( $location['path'] ); ?></code></td><td colspan="3" class="taqi-storage-pending">Not scanned</td></tr><?php endforeach; ?>
+                    <tr><td><strong>Database</strong></td><td><code>MySQL tables</code></td><td><?php echo esc_html( count( $database['tables'] ) ); ?> largest shown</td><td><strong><?php echo esc_html( $database['size'] ); ?></strong></td><td><details><summary>Show largest tables</summary><ul><?php foreach ( $database['tables'] as $table ) : ?><li><code><?php echo esc_html( $table['name'] ); ?></code> — <?php echo esc_html( $table['size'] ); ?> (<?php echo esc_html( number_format_i18n( $table['rows'] ) ); ?> rows)</li><?php endforeach; ?></ul></details></td></tr>
+                </tbody>
+                <tfoot><tr><th colspan="3" style="text-align:right;">Filesystem total</th><th id="taqi-storage-total">Not scanned</th><th></th></tr></tfoot>
+            </table>
+            <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                const button = document.getElementById('taqi-storage-scan-button');
+                const status = document.getElementById('taqi-storage-scan-status');
+                const totalBox = document.getElementById('taqi-storage-total');
+                const locations = <?php echo wp_json_encode( array_keys( $locations ) ); ?>;
+                const ajaxUrl = <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+                const nonce = <?php echo wp_json_encode( wp_create_nonce( 'taqi_storage_usage' ) ); ?>;
+                function formatBytes(bytes) { if (!bytes) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1); return (bytes / Math.pow(1024, index)).toFixed(index ? 2 : 0) + ' ' + units[index]; }
+                function renderResult(result) {
+                    const row = document.querySelector('tr[data-location="' + result.key + '"]');
+                    if (!row) return 0;
+                    const folders = Object.keys(result.subfolders || {}).slice(0, 8).map(function (name) { return name + ': ' + formatBytes(result.subfolders[name].bytes) + ' (' + result.subfolders[name].files + ' files)'; });
+                    const largest = (result.largest || []).map(function (file) { return file.path + ' — ' + formatBytes(file.bytes); });
+                    const details = folders.concat(largest.length ? ['Largest files:'].concat(largest) : []);
+                    row.innerHTML = '<td><strong></strong></td><td><code></code></td><td></td><td><strong></strong></td><td><details><summary>Show details</summary><pre style="white-space:pre-wrap;max-width:620px;"></pre></details></td>';
+                    row.querySelector('td:nth-child(1) strong').textContent = result.label;
+                    row.querySelector('td:nth-child(2) code').textContent = result.path;
+                    row.querySelector('td:nth-child(3)').textContent = Number(result.files || 0).toLocaleString();
+                    row.querySelector('td:nth-child(4) strong').textContent = formatBytes(Number(result.bytes || 0));
+                    row.querySelector('pre').textContent = details.length ? details.join('\n') : (result.error || 'No files found.');
+                    return Number(result.bytes || 0);
+                }
+                if (button) button.addEventListener('click', async function () {
+                    button.disabled = true;
+                    let total = 0;
+                    try {
+                        for (let index = 0; index < locations.length; index++) {
+                            status.textContent = 'Scanning ' + (index + 1) + ' of ' + locations.length + '…';
+                            const body = new URLSearchParams({ action: 'taqi_scan_storage_location', nonce: nonce, location: locations[index] });
+                            const response = await fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: body.toString() });
+                            const result = await response.json();
+                            if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'Storage scan failed.');
+                            total += renderResult(result.data);
+                            totalBox.textContent = formatBytes(total);
+                        }
+                        status.textContent = 'Scan complete.';
+                    } catch (error) { status.textContent = error.message; }
+                    button.disabled = false;
+                });
+            });
+            </script>
         </div>
         <?php
     }
