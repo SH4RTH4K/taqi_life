@@ -48,7 +48,17 @@ final class TAQI_Life_Product {
     public function set_menu_order( $order ) { $this->data['menu_order'] = absint( $order ); }
     public function get_image_id() { return absint( get_post_thumbnail_id( $this->id ) ); }
     public function set_image_id( $id ) { $this->data['image_id'] = absint( $id ); }
-    public function get_gallery_image_ids() { return array_map( 'absint', (array) get_post_meta( $this->id, '_taqi_gallery_image_ids', true ) ); }
+    private function get_gallery_image_ids_for_post( $post_id ) {
+        $ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+        $woocommerce_gallery = (string) get_post_meta( $post_id, '_product_image_gallery', true );
+        if ( '' !== $woocommerce_gallery ) {
+            $ids = array_merge( $ids, array_map( 'absint', explode( ',', $woocommerce_gallery ) ) );
+        }
+        return array_values( array_unique( array_filter( $ids ) ) );
+    }
+    public function get_gallery_image_ids() {
+        return $this->get_gallery_image_ids_for_post( $this->id );
+    }
     public function set_gallery_image_ids( $ids ) { $this->data['gallery_ids'] = array_map( 'absint', (array) $ids ); }
     public function save() {
         $post_type = 'variation' === $this->type ? 'taqi_variation' : 'taqi_product';
@@ -78,7 +88,7 @@ final class TAQI_Life_Product {
 
         foreach ( $post_ids as $post_id ) {
             $image_ids[] = absint( get_post_thumbnail_id( $post_id ) );
-            $image_ids   = array_merge( $image_ids, array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) ) );
+            $image_ids   = array_merge( $image_ids, $this->get_gallery_image_ids_for_post( $post_id ) );
         }
         $image_ids = array_values( array_unique( array_filter( $image_ids ) ) );
 
@@ -100,13 +110,14 @@ final class TAQI_Life_Product {
                 delete_post_thumbnail( $post_id );
             }
 
-            $gallery_ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+            $gallery_ids = $this->get_gallery_image_ids_for_post( $post_id );
             $gallery_ids = array_values( array_diff( $gallery_ids, $supplier_image_ids ) );
-            if ( $gallery_ids ) {
-                update_post_meta( $post_id, '_taqi_gallery_image_ids', $gallery_ids );
-            } else {
-                delete_post_meta( $post_id, '_taqi_gallery_image_ids' );
-            }
+            $taqi_gallery_ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+            $taqi_gallery_ids = array_values( array_diff( $taqi_gallery_ids, $supplier_image_ids ) );
+            if ( $taqi_gallery_ids ) { update_post_meta( $post_id, '_taqi_gallery_image_ids', $taqi_gallery_ids ); } else { delete_post_meta( $post_id, '_taqi_gallery_image_ids' ); }
+            $woocommerce_gallery = array_map( 'absint', array_filter( explode( ',', (string) get_post_meta( $post_id, '_product_image_gallery', true ) ) ) );
+            $woocommerce_gallery = array_values( array_diff( $woocommerce_gallery, $supplier_image_ids ) );
+            if ( $woocommerce_gallery ) { update_post_meta( $post_id, '_product_image_gallery', implode( ',', $woocommerce_gallery ) ); } else { delete_post_meta( $post_id, '_product_image_gallery' ); }
         }
 
         $deleted = 0;
@@ -132,7 +143,7 @@ final class TAQI_Life_Product {
 
         foreach ( $post_ids as $post_id ) {
             $image_ids[] = absint( get_post_thumbnail_id( $post_id ) );
-            $image_ids   = array_merge( $image_ids, array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) ) );
+            $image_ids   = array_merge( $image_ids, $this->get_gallery_image_ids_for_post( $post_id ) );
         }
         $image_ids = array_values( array_unique( array_filter( $image_ids ) ) );
 
@@ -179,6 +190,7 @@ final class TAQI_Life_Product {
                     'relation' => 'OR',
                     array( 'key' => '_thumbnail_id', 'value' => (string) $image_id ),
                     array( 'key' => '_taqi_gallery_image_ids', 'compare' => 'EXISTS' ),
+                    array( 'key' => '_product_image_gallery', 'compare' => 'EXISTS' ),
                 ),
             )
         );
@@ -193,7 +205,7 @@ final class TAQI_Life_Product {
                 return true;
             }
 
-            $gallery_ids = array_map( 'absint', (array) get_post_meta( $post_id, '_taqi_gallery_image_ids', true ) );
+            $gallery_ids = $this->get_gallery_image_ids_for_post( $post_id );
             if ( in_array( $image_id, $gallery_ids, true ) ) {
                 return true;
             }
@@ -248,6 +260,7 @@ final class TAQI_Life_Dropshipping {
         add_action( 'add_meta_boxes_taqi_product', array( $this, 'add_product_meta_box' ) );
         add_action( 'transition_post_status', array( $this, 'handle_product_status_transition' ), 10, 3 );
         add_action( 'wp_ajax_taqi_process_all_pages', array( $this, 'ajax_process_all_pages' ) );
+        add_action( 'wp_ajax_taqi_batch_delete_imported_products', array( $this, 'ajax_batch_delete_imported_products' ) );
     }
 
     /**
@@ -4229,6 +4242,118 @@ final class TAQI_Life_Dropshipping {
         );
     }
 
+    /**
+     * Delete imported products one product per request. Product deletion can
+     * also remove attachment metadata and image files, so keeping each AJAX
+     * request small prevents PHP, proxy, and cPanel timeout limits.
+     */
+    public function ajax_batch_delete_imported_products() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            $this->send_batch_json( false, array( 'message' => 'Permission denied.' ), 403 );
+        }
+
+        $nonce = isset( $_POST['nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['nonce'] ) ) : '';
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'taqi_batch_delete_imported' ) ) {
+            $this->send_batch_json( false, array( 'message' => 'The security check failed. Refresh the page and try again.' ), 403 );
+        }
+
+        $token = isset( $_POST['token'] ) ? preg_replace( '/[^a-zA-Z0-9_-]/', '', (string) wp_unslash( $_POST['token'] ) ) : '';
+        $key   = $token ? 'taqi_delete_imported_' . absint( get_current_user_id() ) . '_' . substr( $token, 0, 32 ) : '';
+        $state = $key ? get_transient( $key ) : false;
+
+        if ( ! is_array( $state ) || empty( $state['ids'] ) ) {
+            $delete_all = ! empty( $_POST['delete_all'] );
+            if ( $delete_all ) {
+                $ids = get_posts(
+                    array(
+                        'post_type'      => array( 'taqi_product', 'product' ),
+                        'post_status'    => 'any',
+                        'fields'         => 'ids',
+                        'posts_per_page' => -1,
+                        'meta_query'     => array(
+                            array( 'key' => '_taqi_supplier', 'value' => $this->supplier_key() ),
+                        ),
+                    )
+                );
+            } else {
+                $ids = ! empty( $_POST['product_ids'] ) && is_array( $_POST['product_ids'] )
+                    ? array_map( 'absint', wp_unslash( $_POST['product_ids'] ) )
+                    : array();
+            }
+
+            $ids = array_values( array_unique( array_filter( $ids ) ) );
+            $token = $token ? $token : wp_generate_uuid4();
+            $key   = 'taqi_delete_imported_' . absint( get_current_user_id() ) . '_' . substr( preg_replace( '/[^a-zA-Z0-9_-]/', '', $token ), 0, 32 );
+            $state = array(
+                'ids'      => $ids,
+                'position' => 0,
+                'deleted'  => 0,
+                'failed'   => 0,
+                'errors'   => array(),
+            );
+        }
+
+        $total    = count( $state['ids'] );
+        $position = min( $total, max( 0, absint( $state['position'] ) ) );
+        set_time_limit( 60 );
+
+        if ( $position < $total ) {
+            $product_id = absint( $state['ids'][ $position ] );
+            $post_type  = get_post_type( $product_id );
+            $valid      = in_array( $post_type, array( 'taqi_product', 'product' ), true )
+                && $this->supplier_key() === get_post_meta( $product_id, '_taqi_supplier', true )
+                && current_user_can( 'delete_post', $product_id );
+
+            if ( ! $valid ) {
+                ++$state['failed'];
+                if ( count( $state['errors'] ) < 10 ) {
+                    $state['errors'][] = 'Product ID ' . $product_id . ' was skipped because it is no longer a valid imported product.';
+                }
+            } else {
+                try {
+                    if ( ( new TAQI_Life_Product( 'simple', $product_id ) )->delete( true ) ) {
+                        ++$state['deleted'];
+                    } else {
+                        ++$state['failed'];
+                        if ( count( $state['errors'] ) < 10 ) {
+                            $state['errors'][] = 'Product ID ' . $product_id . ' could not be deleted.';
+                        }
+                    }
+                } catch ( Throwable $exception ) {
+                    ++$state['failed'];
+                    if ( count( $state['errors'] ) < 10 ) {
+                        $state['errors'][] = 'Product ID ' . $product_id . ': ' . $exception->getMessage();
+                    }
+                }
+            }
+
+            ++$position;
+            $state['position'] = $position;
+        }
+
+        $done = $position >= $total;
+        if ( $done ) {
+            if ( $key ) {
+                delete_transient( $key );
+            }
+        } else {
+            set_transient( $key, $state, HOUR_IN_SECONDS );
+        }
+
+        $this->send_batch_json(
+            true,
+            array(
+                'token'     => $token,
+                'total'     => $total,
+                'completed' => $position,
+                'deleted'   => (int) $state['deleted'],
+                'failed'    => (int) $state['failed'],
+                'errors'    => $state['errors'],
+                'done'      => $done,
+            )
+        );
+    }
+
     private function media_cleanup_transient_key() {
         return 'taqi_media_cleanup_scan_' . absint( get_current_user_id() );
     }
@@ -4284,6 +4409,113 @@ final class TAQI_Life_Dropshipping {
         return in_array( strtolower( pathinfo( $path, PATHINFO_EXTENSION ) ), array( 'jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp' ), true );
     }
 
+    private function media_cleanup_published_attachment_ids() {
+        $used = array();
+        $post_types = array_values( array_unique( array_merge( get_post_types( array(), 'names' ), array( 'product', 'taqi_product', 'taqi_variation' ) ) ) );
+        $post_ids = get_posts(
+            array(
+                'post_type'      => $post_types,
+                'post_status'    => 'publish',
+                'fields'         => 'ids',
+                'posts_per_page' => -1,
+            )
+        );
+
+        foreach ( $post_ids as $post_id ) {
+            $thumbnail_id = absint( get_post_thumbnail_id( $post_id ) );
+            if ( $thumbnail_id ) {
+                $used[ $thumbnail_id ] = true;
+            }
+
+            $gallery = get_post_meta( $post_id, '_product_image_gallery', true );
+            if ( is_string( $gallery ) && '' !== $gallery ) {
+                foreach ( explode( ',', $gallery ) as $image_id ) {
+                    $image_id = absint( $image_id );
+                    if ( $image_id ) {
+                        $used[ $image_id ] = true;
+                    }
+                }
+            }
+
+            $gallery = get_post_meta( $post_id, '_taqi_gallery_image_ids', true );
+            foreach ( (array) $gallery as $image_id ) {
+                $image_id = absint( $image_id );
+                if ( $image_id ) {
+                    $used[ $image_id ] = true;
+                }
+            }
+        }
+
+        return $used;
+    }
+
+    private function media_cleanup_attachment_is_supplier_image( $attachment_id ) {
+        return (bool) ( get_post_meta( $attachment_id, '_taqi_supplier_image_url', true ) || get_post_meta( $attachment_id, '_source_url', true ) );
+    }
+
+    private function media_cleanup_attachment_paths( $attachment_id ) {
+        $attached_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
+        if ( ! is_string( $attached_file ) || '' === $attached_file ) {
+            return array();
+        }
+
+        $attached_file = ltrim( wp_normalize_path( $attached_file ), '/' );
+        $paths         = array( $attached_file );
+        $metadata      = wp_get_attachment_metadata( $attachment_id );
+        if ( ! is_array( $metadata ) ) {
+            return $paths;
+        }
+
+        $relative_dir = dirname( $attached_file );
+        if ( ! empty( $metadata['original_image'] ) ) {
+            $paths[] = ltrim( wp_normalize_path( '.' === $relative_dir ? $metadata['original_image'] : $relative_dir . '/' . $metadata['original_image'] ), '/' );
+        }
+        if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+            foreach ( $metadata['sizes'] as $size ) {
+                if ( ! empty( $size['file'] ) && is_string( $size['file'] ) ) {
+                    $paths[] = ltrim( wp_normalize_path( '.' === $relative_dir ? $size['file'] : $relative_dir . '/' . $size['file'] ), '/' );
+                }
+            }
+        }
+
+        return array_values( array_unique( $paths ) );
+    }
+
+    private function media_cleanup_unused_supplier_attachments() {
+        $unused    = array();
+        $published = $this->media_cleanup_published_attachment_ids();
+        $ids       = get_posts(
+            array(
+                'post_type'      => 'attachment',
+                'post_status'    => 'any',
+                'fields'         => 'ids',
+                'posts_per_page' => -1,
+            )
+        );
+
+        foreach ( $ids as $attachment_id ) {
+            $attachment_id = absint( $attachment_id );
+            if ( ! $attachment_id || ! $this->media_cleanup_attachment_is_supplier_image( $attachment_id ) || isset( $published[ $attachment_id ] ) ) {
+                continue;
+            }
+
+            $attachment = get_post( $attachment_id );
+            if ( $attachment && $attachment->post_parent ) {
+                $parent = get_post( $attachment->post_parent );
+                if ( $parent && 'publish' === $parent->post_status ) {
+                    continue;
+                }
+            }
+
+            $paths = $this->media_cleanup_attachment_paths( $attachment_id );
+            if ( $paths ) {
+                $unused[ $attachment_id ] = $paths;
+            }
+        }
+
+        return $unused;
+    }
+
     private function media_cleanup_scan() {
         $uploads = wp_upload_dir();
         $base_dir = ! empty( $uploads['basedir'] ) ? realpath( $uploads['basedir'] ) : false;
@@ -4317,29 +4549,79 @@ final class TAQI_Life_Dropshipping {
             return new WP_Error( 'taqi_media_scan_failed', 'The uploads directory could not be scanned: ' . $exception->getMessage() );
         }
 
+        $attachments     = $this->media_cleanup_unused_supplier_attachments();
+        $attachment_files = array();
+        foreach ( $attachments as $paths ) {
+            foreach ( $paths as $path ) {
+                if ( ! in_array( $path, $attachment_files, true ) ) {
+                    $attachment_files[] = $path;
+                    $full_path = $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $path );
+                    if ( is_file( $full_path ) ) {
+                        $bytes += (int) filesize( $full_path );
+                    }
+                }
+            }
+        }
+
         sort( $files, SORT_NATURAL | SORT_FLAG_CASE );
+        sort( $attachment_files, SORT_NATURAL | SORT_FLAG_CASE );
         return array(
-            'files'       => $files,
-            'bytes'       => $bytes,
-            'scanned_at'  => current_time( 'mysql' ),
-            'base_dir'    => $base_dir,
+            'files'            => $files,
+            'attachments'      => array_keys( $attachments ),
+            'attachment_files' => $attachment_files,
+            'bytes'            => $bytes,
+            'scanned_at'       => current_time( 'mysql' ),
+            'base_dir'         => $base_dir,
         );
     }
 
     private function media_cleanup_delete_scan( $scan ) {
-        if ( ! is_array( $scan ) || empty( $scan['files'] ) || empty( $scan['base_dir'] ) ) {
-            return array( 'deleted' => 0, 'bytes' => 0, 'skipped' => 0 );
+        if ( ! is_array( $scan ) || empty( $scan['base_dir'] ) ) {
+            return array( 'deleted' => 0, 'deleted_attachments' => 0, 'bytes' => 0, 'skipped' => 0 );
         }
 
         $base_dir   = realpath( $scan['base_dir'] );
         $registered = $this->media_cleanup_registered_files();
+        $published  = $this->media_cleanup_published_attachment_ids();
         if ( ! $base_dir || ! is_dir( $base_dir ) ) {
             return new WP_Error( 'taqi_media_uploads_missing', 'The WordPress uploads directory could not be found.' );
         }
 
         $deleted = 0;
+        $deleted_attachments = 0;
         $bytes   = 0;
         $skipped = 0;
+        foreach ( (array) ( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ) as $attachment_id ) {
+            $attachment_id = absint( $attachment_id );
+            $attachment    = get_post( $attachment_id );
+            if ( ! $attachment || 'attachment' !== $attachment->post_type || isset( $published[ $attachment_id ] ) || ! $this->media_cleanup_attachment_is_supplier_image( $attachment_id ) ) {
+                ++$skipped;
+                continue;
+            }
+            if ( $attachment->post_parent ) {
+                $parent = get_post( $attachment->post_parent );
+                if ( $parent && 'publish' === $parent->post_status ) {
+                    ++$skipped;
+                    continue;
+                }
+            }
+
+            $attachment_paths = $this->media_cleanup_attachment_paths( $attachment_id );
+            $attachment_bytes = 0;
+            foreach ( $attachment_paths as $path ) {
+                $full_path = realpath( $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $path ) );
+                if ( $full_path && is_file( $full_path ) ) {
+                    $attachment_bytes += (int) filesize( $full_path );
+                }
+            }
+            if ( wp_delete_attachment( $attachment_id, true ) ) {
+                ++$deleted_attachments;
+                $bytes += $attachment_bytes;
+            } else {
+                ++$skipped;
+            }
+        }
+
         foreach ( (array) $scan['files'] as $relative ) {
             $relative = ltrim( wp_normalize_path( (string) $relative ), '/' );
             if ( ! preg_match( '#^\d{4}/\d{2}/.+$#', $relative ) || ! $this->media_cleanup_is_image( $relative ) || isset( $registered[ $relative ] ) ) {
@@ -4363,7 +4645,7 @@ final class TAQI_Life_Dropshipping {
             }
         }
 
-        return array( 'deleted' => $deleted, 'bytes' => $bytes, 'skipped' => $skipped );
+        return array( 'deleted' => $deleted, 'deleted_attachments' => $deleted_attachments, 'bytes' => $bytes, 'skipped' => $skipped );
     }
 
     public function media_cleanup_page() {
@@ -4380,7 +4662,7 @@ final class TAQI_Life_Dropshipping {
                 $error = $scan->get_error_message();
             } else {
                 set_transient( $this->media_cleanup_transient_key(), $scan, HOUR_IN_SECONDS );
-                $notice = sprintf( 'Scan complete: %d orphan image file(s) found using %s.', count( $scan['files'] ), size_format( $scan['bytes'] ) );
+                $notice = sprintf( 'Scan complete: %d unregistered image file(s) and %d supplier Media attachment(s) not used by published content found, using %s.', count( $scan['files'] ), count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ), size_format( $scan['bytes'] ) );
             }
         }
 
@@ -4392,21 +4674,22 @@ final class TAQI_Life_Dropshipping {
                 $error = $result->get_error_message();
             } else {
                 delete_transient( $this->media_cleanup_transient_key() );
-                $notice = sprintf( 'Cleanup complete: %d orphan image file(s) deleted and %s freed. %d file(s) were skipped for safety.', $result['deleted'], size_format( $result['bytes'] ), $result['skipped'] );
+                $notice = sprintf( 'Cleanup complete: %d unregistered image file(s) and %d supplier Media attachment(s) deleted, freeing %s. %d item(s) were skipped for safety.', $result['deleted'], $result['deleted_attachments'], size_format( $result['bytes'] ), $result['skipped'] );
             }
         }
 
         $scan = get_transient( $this->media_cleanup_transient_key() );
+        $scan_files = is_array( $scan ) ? array_values( array_unique( array_merge( (array) $scan['files'], (array) ( isset( $scan['attachment_files'] ) ? $scan['attachment_files'] : array() ) ) ) ) : array();
         ?>
         <div class="wrap">
             <h1>TAQI LIFE Media Cleanup</h1>
-            <p>Find and remove image files inside the standard WordPress <code>uploads/YYYY/MM</code> folders that are no longer registered as Media attachments.</p>
+            <p>Find and remove unregistered image files and supplier Media attachments that are no longer used by published content.</p>
             <?php if ( $notice ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $notice ); ?></p></div><?php endif; ?>
             <?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
 
             <div style="max-width:1000px;background:#fff;border:1px solid #dcdcde;border-left:4px solid #2271b1;padding:18px;margin:18px 0;">
                 <h2 style="margin-top:0;">1. Scan uploads</h2>
-                <p>This tool protects files referenced by the WordPress Media Library and ignores backups, logs, JetBackup folders, and non-standard upload files.</p>
+                <p>This tool protects supplier images used by published posts/products, registered Media files used by published content, and ignores backups, logs, JetBackup folders, and non-standard upload files.</p>
                 <form method="post">
                     <?php wp_nonce_field( 'taqi_media_cleanup_scan', 'taqi_media_cleanup_nonce' ); ?>
                     <button type="submit" name="taqi_media_cleanup_scan" value="1" class="button button-primary">Scan For Orphan Images</button>
@@ -4416,11 +4699,11 @@ final class TAQI_Life_Dropshipping {
             <?php if ( is_array( $scan ) ) : ?>
                 <div style="max-width:1000px;background:#fff8e5;border:1px solid #dba617;border-left:4px solid #dba617;padding:18px;margin:18px 0;">
                     <h2 style="margin-top:0;">2. Review and delete</h2>
-                    <p><strong><?php echo esc_html( count( $scan['files'] ) ); ?></strong> orphan image file(s) found, using <strong><?php echo esc_html( size_format( $scan['bytes'] ) ); ?></strong>.</p>
+                    <p><strong><?php echo esc_html( count( $scan['files'] ) ); ?></strong> unregistered image file(s) and <strong><?php echo esc_html( count( isset( $scan['attachments'] ) ? $scan['attachments'] : array() ) ); ?></strong> unused supplier Media attachment(s) found, using <strong><?php echo esc_html( size_format( $scan['bytes'] ) ); ?></strong>.</p>
                     <p class="description">Scan time: <?php echo esc_html( $scan['scanned_at'] ); ?>. The delete action re-checks the database before removing files.</p>
-                    <?php if ( ! empty( $scan['files'] ) ) : ?>
-                        <details style="margin:12px 0;"><summary>Show first 50 files</summary><ul style="max-height:260px;overflow:auto;background:#fff;padding:10px 10px 10px 30px;"><?php foreach ( array_slice( $scan['files'], 0, 50 ) as $file ) : ?><li><code><?php echo esc_html( $file ); ?></code></li><?php endforeach; ?></ul></details>
-                        <form method="post" onsubmit="return confirm('Delete all scanned orphan image files? This cannot be undone.');">
+                    <?php if ( $scan_files ) : ?>
+                        <details style="margin:12px 0;"><summary>Show first 50 files</summary><ul style="max-height:260px;overflow:auto;background:#fff;padding:10px 10px 10px 30px;"><?php foreach ( array_slice( $scan_files, 0, 50 ) as $file ) : ?><li><code><?php echo esc_html( $file ); ?></code></li><?php endforeach; ?></ul></details>
+                        <form method="post" onsubmit="return confirm('Delete all scanned orphan files and unused supplier Media attachments? This cannot be undone.');">
                             <?php wp_nonce_field( 'taqi_media_cleanup_delete', 'taqi_media_cleanup_delete_nonce' ); ?>
                             <button type="submit" name="taqi_media_cleanup_delete" value="1" class="button" style="color:#b32d2e;border-color:#b32d2e;">Delete Scanned Orphan Images</button>
                         </form>
@@ -5190,9 +5473,16 @@ final class TAQI_Life_Dropshipping {
                 <span class="taqi-selection-count"><strong id="taqi-imported-selected-count">0</strong> selected</span>
                 <button type="submit" name="taqi_bulk_status_action" value="publish" class="button button-primary" onclick="return taqiConfirmImportedBatch('publish');">Publish Selected</button>
                 <button type="submit" name="taqi_bulk_status_action" value="unpublish" class="button" onclick="return taqiConfirmImportedBatch('unpublish');">Unpublish Selected</button>
-                <button type="submit" name="taqi_bulk_delete_action" value="delete_products" class="button button-link-delete" onclick="return taqiConfirmImportedBatch('delete_products');">Delete Selected Products</button>
-                <span class="description">Select products below. Actions apply to the current page.</span>
+                <button type="button" id="taqi-delete-selected-products-button" class="button button-link-delete">Delete Selected Products</button>
+                <button type="button" id="taqi-delete-all-products-button" class="button button-link-delete">Delete All Imported Products</button>
+                <span class="description">Publish/unpublish actions apply to the current page. Delete All includes every imported product for this supplier, including unpublished and trashed records.</span>
             </form>
+
+            <div id="taqi-imported-delete-progress" class="notice notice-warning inline" style="display:none;max-width:900px;">
+                <p><strong id="taqi-imported-delete-progress-label">Deleting imported products…</strong></p>
+                <progress id="taqi-imported-delete-progress-bar" value="0" max="1" style="width:100%;height:20px;"></progress>
+                <p id="taqi-imported-delete-progress-detail" class="description">The page will refresh when the operation is complete. Keep this tab open.</p>
+            </div>
 
             <div class="taqi-status-table-wrap"><table class="widefat striped taqi-status-table">
                 <thead>
@@ -5341,6 +5631,12 @@ final class TAQI_Life_Dropshipping {
                 const importedSelectAllButton = document.getElementById('taqi-imported-select-all-button');
                 const importedClearButton = document.getElementById('taqi-imported-clear-button');
                 const importedSelectedCount = document.getElementById('taqi-imported-selected-count');
+                const deleteSelectedButton = document.getElementById('taqi-delete-selected-products-button');
+                const deleteAllButton = document.getElementById('taqi-delete-all-products-button');
+                const deleteProgress = document.getElementById('taqi-imported-delete-progress');
+                const deleteProgressLabel = document.getElementById('taqi-imported-delete-progress-label');
+                const deleteProgressBar = document.getElementById('taqi-imported-delete-progress-bar');
+                const deleteProgressDetail = document.getElementById('taqi-imported-delete-progress-detail');
                 function updateImportedSelection() {
                     const checks = document.querySelectorAll('.taqi-imported-check');
                     const selected = document.querySelectorAll('.taqi-imported-check:checked');
@@ -5384,6 +5680,71 @@ final class TAQI_Life_Dropshipping {
                     });
                     return true;
                 };
+
+                function setImportedDeleteButtonsDisabled(disabled) {
+                    [deleteSelectedButton, deleteAllButton, importedSelectAllButton, importedClearButton].forEach(function (button) {
+                        if (button) button.disabled = disabled;
+                    });
+                }
+
+                async function deleteImportedProductsInBatches(deleteAll) {
+                    const selected = Array.from(document.querySelectorAll('.taqi-imported-check:checked')).map(function (checkbox) { return checkbox.value; });
+                    if (!deleteAll && !selected.length) {
+                        window.alert('Select at least one product first.');
+                        return;
+                    }
+                    const confirmation = deleteAll
+                        ? 'Permanently delete ALL imported products and their unused supplier images? This cannot be undone.'
+                        : 'Permanently delete all selected products and their unused supplier images? This cannot be undone.';
+                    if (!window.confirm(confirmation)) return;
+
+                    setImportedDeleteButtonsDisabled(true);
+                    if (deleteProgress) deleteProgress.style.display = 'block';
+                    if (deleteProgressLabel) deleteProgressLabel.textContent = deleteAll ? 'Deleting all imported products…' : 'Deleting selected imported products…';
+                    if (deleteProgressDetail) deleteProgressDetail.textContent = 'Preparing a safe one-product-at-a-time deletion queue…';
+
+                    const request = new URLSearchParams();
+                    request.append('action', 'taqi_batch_delete_imported_products');
+                    request.append('nonce', <?php echo wp_json_encode( wp_create_nonce( 'taqi_batch_delete_imported' ) ); ?>);
+                    request.append('delete_all', deleteAll ? '1' : '0');
+                    if (!deleteAll) selected.forEach(function (productId) { request.append('product_ids[]', productId); });
+
+                    let token = '';
+                    try {
+                        while (true) {
+                            const body = new URLSearchParams(request.toString());
+                            if (token) body.set('token', token);
+                            const response = await fetch(<?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, body: body.toString() });
+                            const result = await response.json();
+                            if (!result.success) throw new Error(result.data && result.data.message ? result.data.message : 'The delete request failed.');
+
+                            const data = result.data || {};
+                            token = data.token || token;
+                            if (deleteProgressBar) {
+                                deleteProgressBar.max = Math.max(1, Number(data.total || 0));
+                                deleteProgressBar.value = Number(data.completed || 0);
+                            }
+                            if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deleting imported products… ' + Number(data.completed || 0) + ' / ' + Number(data.total || 0);
+                            if (deleteProgressDetail) deleteProgressDetail.textContent = Number(data.deleted || 0) + ' deleted, ' + Number(data.failed || 0) + ' skipped or failed. Each request handles one product to avoid timeout.';
+                            if (data.done) {
+                                const warning = data.failed ? ' ' + data.failed + ' item(s) were skipped or failed.' : '';
+                                if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deletion complete.';
+                                if (deleteProgressDetail) deleteProgressDetail.textContent = data.deleted + ' product(s) deleted with unused supplier images.' + warning + ' Reloading…';
+                                window.setTimeout(function () { window.location.reload(); }, 1200);
+                                break;
+                            }
+                            request.delete('delete_all');
+                            request.delete('product_ids[]');
+                        }
+                    } catch (error) {
+                        if (deleteProgressLabel) deleteProgressLabel.textContent = 'Deletion paused.';
+                        if (deleteProgressDetail) deleteProgressDetail.textContent = error.message + ' Refresh the page and start again; completed products remain deleted.';
+                        setImportedDeleteButtonsDisabled(false);
+                    }
+                }
+
+                if (deleteSelectedButton) deleteSelectedButton.addEventListener('click', function () { deleteImportedProductsInBatches(false); });
+                if (deleteAllButton) deleteAllButton.addEventListener('click', function () { deleteImportedProductsInBatches(true); });
                 const modal = document.getElementById('taqi-delete-modal');
                 const nameBox = document.getElementById('taqi-delete-product-name');
                 const cancelBtn = document.getElementById('taqi-delete-cancel');
