@@ -429,7 +429,46 @@ JS
             <input type="hidden" name="bd_courier_api_token_fallback" value="1">
             <input type="hidden" id="bd-courier-api-token-fallback-value" name="apiToken" value="">
         </form>
+        <div style="max-width:1120px;margin:18px auto 0;padding:9px 14px;border-left:4px solid #2271b1;background:#f0f6fc;color:#174a6b;font-size:13px;">
+            <strong>Live API save protection active.</strong> API Token → Save Settings uses a secure WordPress form and does not depend on REST/AJAX.
+        </div>
         <div id="bd-courier-react-root"></div>
+        <script>
+        (function () {
+            if (window.bdCourierDirectTokenSaveInstalled) return;
+            window.bdCourierDirectTokenSaveInstalled = true;
+
+            document.addEventListener('click', function (event) {
+                var button = event.target && event.target.closest ? event.target.closest('button') : null;
+                var root = document.getElementById('bd-courier-react-root');
+                if (!button || !root || !root.contains(button) || button.textContent.trim() !== 'Save Settings') return;
+
+                var card = button.closest('.bdc-card');
+                if (!card) return;
+                var labels = card.querySelectorAll('label');
+                var isApiTokenCard = false;
+                for (var index = 0; index < labels.length; index++) {
+                    if (labels[index].textContent.trim() === 'API Token') {
+                        isApiTokenCard = true;
+                        break;
+                    }
+                }
+                if (!isApiTokenCard) return;
+
+                var tokenInput = card.querySelector('input[type="password"], input[type="text"]');
+                var form = document.getElementById('bd-courier-api-token-fallback-form');
+                var fallbackValue = document.getElementById('bd-courier-api-token-fallback-value');
+                if (!tokenInput || !form || !fallbackValue) return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                fallbackValue.value = tokenInput.value;
+                button.disabled = true;
+                form.submit();
+            }, true);
+        }());
+        </script>
         <?php
     }
 

@@ -3,7 +3,7 @@
  * Plugin Name: BD Courier Order Ratio Checker 
  * Plugin URI: https://rasedulhaque.com/bd-courier-order-ratio-checker
  * Description: A plugin to show customer order ratio from BD Courier with settings and search functionality. Includes fraud prevention, duplicate order detection, incomplete order tracking, and VPN/proxy detection.
- * Version: 3.1.1
+ * Version: 3.1.2
  * Requires at least: 5.8
  * Tested up to: 6.4
  * Requires PHP: 7.4
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Define plugin directory path and version.
 define( 'BD_COURIER_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
-define( 'BD_COURIER_VERSION', '3.1.1' );
+define( 'BD_COURIER_VERSION', '3.1.2' );
 
 /**
  * Get plugin version.
