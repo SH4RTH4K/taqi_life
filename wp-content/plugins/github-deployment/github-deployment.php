@@ -192,6 +192,42 @@ final class TAQI_GitHub_Deployment {
         update_option( self::AUDIT_OPTION, $audit, false );
     }
 
+    /**
+     * Create a persistent archive before changing tracked files.
+     *
+     * Keep this check explicit because cPanel can report the same generic
+     * failure for a full quota, an unwritable uploads directory, a duplicate
+     * archive name, or a Git command error.
+     */
+    private function create_code_backup( $prefix, $status ) {
+        $uploads = wp_upload_dir();
+        if ( ! empty( $uploads['error'] ) ) {
+            return new WP_Error( 'taqi_backup_uploads_error', 'Code backup could not start: ' . $uploads['error'] );
+        }
+
+        $backup_dir = ! empty( $uploads['basedir'] ) ? trailingslashit( $uploads['basedir'] ) . 'taqi-deployment-backups' : '';
+        if ( '' === $backup_dir ) {
+            return new WP_Error( 'taqi_backup_path_error', 'Code backup could not start because WordPress returned an empty uploads path.' );
+        }
+        if ( ! is_dir( $backup_dir ) && ! wp_mkdir_p( $backup_dir ) ) {
+            return new WP_Error( 'taqi_backup_directory_error', 'Code backup could not start because the backup directory could not be created: ' . $backup_dir );
+        }
+        if ( ! is_writable( $backup_dir ) ) {
+            return new WP_Error( 'taqi_backup_not_writable', 'Code backup could not start because the backup directory is not writable: ' . $backup_dir );
+        }
+
+        $local_hash = ! empty( $status['local'] ) ? substr( sanitize_key( $status['local'] ), 0, 12 ) : 'unknown';
+        $unique     = substr( md5( microtime( true ) . wp_rand() ), 0, 8 );
+        $backup     = trailingslashit( $backup_dir ) . sanitize_key( $prefix ) . '-' . gmdate( 'Ymd-His' ) . '-' . $local_hash . '-' . $unique . '.zip';
+        $archive    = $this->git( array( 'archive', '--format=zip', '-o', $backup, 'HEAD' ) );
+        if ( 0 !== $archive['code'] || ! file_exists( $backup ) || 0 === (int) @filesize( $backup ) ) {
+            $reason = $archive['output'] ? $archive['output'] : 'Git archive returned exit code ' . (int) $archive['code'] . '.';
+            return new WP_Error( 'taqi_backup_failed', 'Code backup could not be created. Check cPanel disk quota and folder permissions. Details: ' . $reason );
+        }
+
+        return $backup;
+    }
+
     private function deploy( $status, $review ) {
         if ( 'Update available' !== $status['status'] || empty( $status['remote'] ) ) {
             return new WP_Error( 'taqi_deploy_not_ready', 'Deployment is blocked: refresh status and confirm that an update is available.' );
@@ -200,13 +236,9 @@ final class TAQI_GitHub_Deployment {
             return new WP_Error( 'taqi_deploy_not_approved', 'Deployment is blocked until this exact commit has a review comment and approval.' );
         }
 
-        $uploads = wp_upload_dir();
-        $backup_dir = trailingslashit( $uploads['basedir'] ) . 'taqi-deployment-backups';
-        wp_mkdir_p( $backup_dir );
-        $backup = trailingslashit( $backup_dir ) . 'before-' . gmdate( 'Ymd-His' ) . '-' . substr( $status['local'], 0, 12 ) . '.zip';
-        $archive = $this->git( array( 'archive', '--format=zip', '-o', $backup, 'HEAD' ) );
-        if ( 0 !== $archive['code'] || ! file_exists( $backup ) ) {
-            return new WP_Error( 'taqi_backup_failed', 'Deployment blocked because the pre-deployment code backup could not be created.' );
+        $backup = $this->create_code_backup( 'before', $status );
+        if ( is_wp_error( $backup ) ) {
+            return new WP_Error( 'taqi_backup_failed', 'Deployment blocked because the pre-deployment code backup could not be created. ' . $backup->get_error_message() );
         }
 
         $pulled = $this->git( array( 'pull', '--ff-only', $this->settings()['remote_name'], $this->settings()['branch'] ) );
@@ -225,13 +257,9 @@ final class TAQI_GitHub_Deployment {
             return new WP_Error( 'taqi_sync_not_ready', 'Update cannot start until the repository and branch connection is valid.' );
         }
 
-        $uploads = wp_upload_dir();
-        $backup_dir = trailingslashit( $uploads['basedir'] ) . 'taqi-deployment-backups';
-        wp_mkdir_p( $backup_dir );
-        $backup = trailingslashit( $backup_dir ) . 'before-sync-' . gmdate( 'Ymd-His' ) . '-' . substr( $status['local'], 0, 12 ) . '.zip';
-        $archive = $this->git( array( 'archive', '--format=zip', '-o', $backup, 'HEAD' ) );
-        if ( 0 !== $archive['code'] || ! file_exists( $backup ) ) {
-            return new WP_Error( 'taqi_backup_failed', 'Update blocked because the pre-update code backup could not be created.' );
+        $backup = $this->create_code_backup( 'before-sync', $status );
+        if ( is_wp_error( $backup ) ) {
+            return new WP_Error( 'taqi_backup_failed', 'Update blocked because the pre-update code backup could not be created. ' . $backup->get_error_message() );
         }
 
         $remote_ref = $this->settings()['remote_name'] . '/' . $this->settings()['branch'];
