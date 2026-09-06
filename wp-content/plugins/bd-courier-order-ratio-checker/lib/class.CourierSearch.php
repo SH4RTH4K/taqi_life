@@ -26,6 +26,7 @@ class CourierSearch {
         
         // REST API endpoints for React frontend
         add_action( 'rest_api_init', array( $this, 'register_rest_routes' ) );
+        add_action( 'admin_init', array( $this, 'handle_admin_api_proxy' ), 1 );
         
         // Add type="module" to search app scripts
         add_filter( 'script_loader_tag', array( $this, 'add_module_type_to_scripts' ), 10, 2 );
@@ -149,9 +150,47 @@ class CourierSearch {
                 
                 // Localize script with WordPress REST API data
                 wp_localize_script( 'bd-courier-search-js', 'wpApiSettings', [
-                    'root'  => esc_url_raw( rest_url() ),
-                    'nonce' => wp_create_nonce( 'wp_rest' ),
+                    'root'          => esc_url_raw( rest_url() ),
+                    'nonce'         => wp_create_nonce( 'wp_rest' ),
+                    'fallbackUrl'   => esc_url_raw( admin_url( 'admin.php?page=bd-courier-search&bd_courier_api_proxy=1' ) ),
+                    'fallbackNonce' => wp_create_nonce( 'bd_courier_admin_api_proxy' ),
                 ]);
+
+                // cPanel/Imunify can replace REST responses with an HTML
+                // challenge. Keep the Search page on the authenticated
+                // wp-admin bridge instead of exposing that HTML to JSON.parse.
+                wp_add_inline_script(
+                    'bd-courier-search-js',
+                    <<<'JS'
+(function () {
+    if (window.bdCourierSearchApiProxyInstalled || typeof window.fetch !== 'function') return;
+    window.bdCourierSearchApiProxyInstalled = true;
+    var originalFetch = window.fetch.bind(window);
+
+    function apiRoute(input) {
+        var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        var marker = '/bd-courier/v1/';
+        var position = url.indexOf(marker);
+        if (position === -1) return '';
+        return url.slice(position + marker.length).split(/[?#]/)[0].replace(/^\/+|\/+$/g, '');
+    }
+
+    window.fetch = function (input, options) {
+        var route = apiRoute(input);
+        var apiSettings = window.wpApiSettings || {};
+        if (!route || !apiSettings.fallbackUrl || !apiSettings.fallbackNonce) {
+            return originalFetch(input, options);
+        }
+
+        var separator = apiSettings.fallbackUrl.indexOf('?') === -1 ? '?' : '&';
+        var proxyUrl = apiSettings.fallbackUrl + separator + 'bd_courier_route=' + encodeURIComponent(route) + '&bd_courier_proxy_nonce=' + encodeURIComponent(apiSettings.fallbackNonce);
+        return originalFetch(proxyUrl, options);
+    };
+}());
+JS
+                    ,
+                    'before'
+                );
                 
                 // Localize logo base URL
                 wp_localize_script( 'bd-courier-search-js', 'bdcourierLogoBaseUrl', [
@@ -193,6 +232,68 @@ class CourierSearch {
         ?>
         <div id="bd-courier-search-root"></div>
         <?php
+    }
+
+    /**
+     * Authenticated wp-admin JSON bridge for Search page endpoints when the
+     * live host blocks /wp-json/ with an HTML security challenge.
+     */
+    public function handle_admin_api_proxy() {
+        if ( empty( $_GET['bd_courier_api_proxy'] ) ) {
+            return;
+        }
+
+        $route = isset( $_GET['bd_courier_route'] ) ? sanitize_key( wp_unslash( $_GET['bd_courier_route'] ) ) : '';
+        if ( ! in_array( $route, array( 'search', 'generate-image' ), true ) ) {
+            return;
+        }
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json( array( 'code' => 'rest_forbidden', 'message' => 'You are not allowed to access courier search.', 'data' => array( 'status' => 403 ) ), 403 );
+        }
+
+        $nonce = isset( $_GET['bd_courier_proxy_nonce'] ) ? sanitize_text_field( wp_unslash( $_GET['bd_courier_proxy_nonce'] ) ) : '';
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'bd_courier_admin_api_proxy' ) ) {
+            wp_send_json( array( 'code' => 'rest_cookie_invalid_nonce', 'message' => 'The security token expired. Refresh this page and try again.', 'data' => array( 'status' => 403 ) ), 403 );
+        }
+
+        $method = strtoupper( isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : 'GET' );
+        if ( 'POST' !== $method ) {
+            wp_send_json( array( 'code' => 'rest_no_route', 'message' => 'No matching courier search route was found.', 'data' => array( 'status' => 404 ) ), 404 );
+        }
+
+        $callbacks = array(
+            'search'         => 'search_courier_rest',
+            'generate-image' => 'generate_image_rest',
+        );
+        $request = new WP_REST_Request( 'POST', '/bd-courier/v1/' . $route );
+        $raw_body = file_get_contents( 'php://input' );
+        if ( false !== $raw_body && '' !== $raw_body ) {
+            $request->set_body( $raw_body );
+            $request->set_header( 'content-type', 'application/json' );
+        }
+
+        try {
+            $response = call_user_func( array( $this, $callbacks[ $route ] ), $request );
+        } catch ( Throwable $exception ) {
+            wp_send_json( array( 'code' => 'bd_courier_proxy_error', 'message' => $exception->getMessage(), 'data' => array( 'status' => 500 ) ), 500 );
+        }
+
+        if ( is_wp_error( $response ) ) {
+            $error_data = $response->get_error_data();
+            $status = is_array( $error_data ) && isset( $error_data['status'] ) ? absint( $error_data['status'] ) : 500;
+            wp_send_json(
+                array(
+                    'code'    => $response->get_error_code(),
+                    'message' => $response->get_error_message(),
+                    'data'    => is_array( $error_data ) ? $error_data : array( 'status' => $status ),
+                ),
+                $status
+            );
+        }
+
+        $response = rest_ensure_response( $response );
+        wp_send_json( $response->get_data(), $response->get_status() );
     }
 
     /**

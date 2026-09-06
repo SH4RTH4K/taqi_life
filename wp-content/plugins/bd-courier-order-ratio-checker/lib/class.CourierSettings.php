@@ -350,6 +350,11 @@ JS
         }
 
         $route  = isset( $_GET['bd_courier_route'] ) ? sanitize_key( wp_unslash( $_GET['bd_courier_route'] ) ) : '';
+        // CourierSearch owns these endpoints and handles their proxy request
+        // at the next admin_init priority. Do not turn them into a 404 here.
+        if ( in_array( $route, array( 'search', 'generate-image' ), true ) ) {
+            return;
+        }
         $method = strtoupper( isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : 'GET' );
         $routes = array(
             'settings'          => array(
