@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 /**
  * Plugin Name: TAQI LIFE WhatsApp
  * Description: Standalone WhatsApp Notification & Campaign System for TAQI LIFE. Integrates with WooCommerce using Meta Cloud API.
