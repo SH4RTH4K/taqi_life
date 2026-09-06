@@ -315,6 +315,15 @@ final class TAQI_Life_Dropshipping {
 
         add_submenu_page(
             'taqi-dropshipping',
+            'Media Cleanup',
+            'Media Cleanup',
+            'manage_options',
+            'taqi-dropshipping-media',
+            array( $this, 'media_cleanup_page' )
+        );
+
+        add_submenu_page(
+            'taqi-dropshipping',
             'Category Mapping',
             'Category Mapping',
             'manage_options',
@@ -4220,6 +4229,210 @@ final class TAQI_Life_Dropshipping {
         );
     }
 
+    private function media_cleanup_transient_key() {
+        return 'taqi_media_cleanup_scan_' . absint( get_current_user_id() );
+    }
+
+    private function media_cleanup_registered_files() {
+        $registered = array();
+        $attachment_ids = get_posts(
+            array(
+                'post_type'      => 'attachment',
+                'post_status'    => 'any',
+                'fields'         => 'ids',
+                'posts_per_page' => -1,
+            )
+        );
+
+        foreach ( $attachment_ids as $attachment_id ) {
+            $attached_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
+            if ( ! is_string( $attached_file ) || '' === $attached_file ) {
+                continue;
+            }
+
+            $attached_file = ltrim( wp_normalize_path( $attached_file ), '/' );
+            $registered[ $attached_file ] = true;
+
+            $metadata = wp_get_attachment_metadata( $attachment_id );
+            if ( ! is_array( $metadata ) ) {
+                continue;
+            }
+
+            $relative_dir = dirname( $attached_file );
+            if ( ! empty( $metadata['original_image'] ) ) {
+                $original = '.' === $relative_dir ? $metadata['original_image'] : $relative_dir . '/' . $metadata['original_image'];
+                $registered[ ltrim( wp_normalize_path( $original ), '/' ) ] = true;
+            }
+
+            if ( empty( $metadata['sizes'] ) || ! is_array( $metadata['sizes'] ) ) {
+                continue;
+            }
+
+            foreach ( $metadata['sizes'] as $size ) {
+                if ( empty( $size['file'] ) || ! is_string( $size['file'] ) ) {
+                    continue;
+                }
+                $size_file = '.' === $relative_dir ? $size['file'] : $relative_dir . '/' . $size['file'];
+                $registered[ ltrim( wp_normalize_path( $size_file ), '/' ) ] = true;
+            }
+        }
+
+        return $registered;
+    }
+
+    private function media_cleanup_is_image( $path ) {
+        return in_array( strtolower( pathinfo( $path, PATHINFO_EXTENSION ) ), array( 'jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp' ), true );
+    }
+
+    private function media_cleanup_scan() {
+        $uploads = wp_upload_dir();
+        $base_dir = ! empty( $uploads['basedir'] ) ? realpath( $uploads['basedir'] ) : false;
+        if ( ! $base_dir || ! is_dir( $base_dir ) ) {
+            return new WP_Error( 'taqi_media_uploads_missing', 'The WordPress uploads directory could not be found.' );
+        }
+
+        $registered = $this->media_cleanup_registered_files();
+        $files      = array();
+        $bytes      = 0;
+        try {
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator( $base_dir, FilesystemIterator::SKIP_DOTS )
+            );
+            foreach ( $iterator as $file ) {
+                if ( ! $file->isFile() ) {
+                    continue;
+                }
+
+                $relative = ltrim( str_replace( '\\', '/', substr( $file->getPathname(), strlen( $base_dir ) ) ), '/' );
+                // Only inspect standard year/month upload folders. Backups,
+                // logs, and other application files are deliberately ignored.
+                if ( ! preg_match( '#^\d{4}/\d{2}/.+$#', $relative ) || ! $this->media_cleanup_is_image( $relative ) || isset( $registered[ $relative ] ) ) {
+                    continue;
+                }
+
+                $files[] = $relative;
+                $bytes  += (int) $file->getSize();
+            }
+        } catch ( Exception $exception ) {
+            return new WP_Error( 'taqi_media_scan_failed', 'The uploads directory could not be scanned: ' . $exception->getMessage() );
+        }
+
+        sort( $files, SORT_NATURAL | SORT_FLAG_CASE );
+        return array(
+            'files'       => $files,
+            'bytes'       => $bytes,
+            'scanned_at'  => current_time( 'mysql' ),
+            'base_dir'    => $base_dir,
+        );
+    }
+
+    private function media_cleanup_delete_scan( $scan ) {
+        if ( ! is_array( $scan ) || empty( $scan['files'] ) || empty( $scan['base_dir'] ) ) {
+            return array( 'deleted' => 0, 'bytes' => 0, 'skipped' => 0 );
+        }
+
+        $base_dir   = realpath( $scan['base_dir'] );
+        $registered = $this->media_cleanup_registered_files();
+        if ( ! $base_dir || ! is_dir( $base_dir ) ) {
+            return new WP_Error( 'taqi_media_uploads_missing', 'The WordPress uploads directory could not be found.' );
+        }
+
+        $deleted = 0;
+        $bytes   = 0;
+        $skipped = 0;
+        foreach ( (array) $scan['files'] as $relative ) {
+            $relative = ltrim( wp_normalize_path( (string) $relative ), '/' );
+            if ( ! preg_match( '#^\d{4}/\d{2}/.+$#', $relative ) || ! $this->media_cleanup_is_image( $relative ) || isset( $registered[ $relative ] ) ) {
+                ++$skipped;
+                continue;
+            }
+
+            $full_path = realpath( $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative ) );
+            $base_path = trailingslashit( wp_normalize_path( $base_dir ) );
+            if ( ! $full_path || ! is_file( $full_path ) || 0 !== strpos( wp_normalize_path( $full_path ), $base_path ) ) {
+                ++$skipped;
+                continue;
+            }
+
+            $size = (int) filesize( $full_path );
+            if ( wp_delete_file( $full_path ) ) {
+                ++$deleted;
+                $bytes += $size;
+            } else {
+                ++$skipped;
+            }
+        }
+
+        return array( 'deleted' => $deleted, 'bytes' => $bytes, 'skipped' => $skipped );
+    }
+
+    public function media_cleanup_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $notice = '';
+        $error  = '';
+        if ( ! empty( $_POST['taqi_media_cleanup_scan'] ) ) {
+            check_admin_referer( 'taqi_media_cleanup_scan', 'taqi_media_cleanup_nonce' );
+            $scan = $this->media_cleanup_scan();
+            if ( is_wp_error( $scan ) ) {
+                $error = $scan->get_error_message();
+            } else {
+                set_transient( $this->media_cleanup_transient_key(), $scan, HOUR_IN_SECONDS );
+                $notice = sprintf( 'Scan complete: %d orphan image file(s) found using %s.', count( $scan['files'] ), size_format( $scan['bytes'] ) );
+            }
+        }
+
+        if ( ! empty( $_POST['taqi_media_cleanup_delete'] ) ) {
+            check_admin_referer( 'taqi_media_cleanup_delete', 'taqi_media_cleanup_delete_nonce' );
+            $scan = get_transient( $this->media_cleanup_transient_key() );
+            $result = $this->media_cleanup_delete_scan( $scan );
+            if ( is_wp_error( $result ) ) {
+                $error = $result->get_error_message();
+            } else {
+                delete_transient( $this->media_cleanup_transient_key() );
+                $notice = sprintf( 'Cleanup complete: %d orphan image file(s) deleted and %s freed. %d file(s) were skipped for safety.', $result['deleted'], size_format( $result['bytes'] ), $result['skipped'] );
+            }
+        }
+
+        $scan = get_transient( $this->media_cleanup_transient_key() );
+        ?>
+        <div class="wrap">
+            <h1>TAQI LIFE Media Cleanup</h1>
+            <p>Find and remove image files inside the standard WordPress <code>uploads/YYYY/MM</code> folders that are no longer registered as Media attachments.</p>
+            <?php if ( $notice ) : ?><div class="notice notice-success is-dismissible"><p><?php echo esc_html( $notice ); ?></p></div><?php endif; ?>
+            <?php if ( $error ) : ?><div class="notice notice-error"><p><?php echo esc_html( $error ); ?></p></div><?php endif; ?>
+
+            <div style="max-width:1000px;background:#fff;border:1px solid #dcdcde;border-left:4px solid #2271b1;padding:18px;margin:18px 0;">
+                <h2 style="margin-top:0;">1. Scan uploads</h2>
+                <p>This tool protects files referenced by the WordPress Media Library and ignores backups, logs, JetBackup folders, and non-standard upload files.</p>
+                <form method="post">
+                    <?php wp_nonce_field( 'taqi_media_cleanup_scan', 'taqi_media_cleanup_nonce' ); ?>
+                    <button type="submit" name="taqi_media_cleanup_scan" value="1" class="button button-primary">Scan For Orphan Images</button>
+                </form>
+            </div>
+
+            <?php if ( is_array( $scan ) ) : ?>
+                <div style="max-width:1000px;background:#fff8e5;border:1px solid #dba617;border-left:4px solid #dba617;padding:18px;margin:18px 0;">
+                    <h2 style="margin-top:0;">2. Review and delete</h2>
+                    <p><strong><?php echo esc_html( count( $scan['files'] ) ); ?></strong> orphan image file(s) found, using <strong><?php echo esc_html( size_format( $scan['bytes'] ) ); ?></strong>.</p>
+                    <p class="description">Scan time: <?php echo esc_html( $scan['scanned_at'] ); ?>. The delete action re-checks the database before removing files.</p>
+                    <?php if ( ! empty( $scan['files'] ) ) : ?>
+                        <details style="margin:12px 0;"><summary>Show first 50 files</summary><ul style="max-height:260px;overflow:auto;background:#fff;padding:10px 10px 10px 30px;"><?php foreach ( array_slice( $scan['files'], 0, 50 ) as $file ) : ?><li><code><?php echo esc_html( $file ); ?></code></li><?php endforeach; ?></ul></details>
+                        <form method="post" onsubmit="return confirm('Delete all scanned orphan image files? This cannot be undone.');">
+                            <?php wp_nonce_field( 'taqi_media_cleanup_delete', 'taqi_media_cleanup_delete_nonce' ); ?>
+                            <button type="submit" name="taqi_media_cleanup_delete" value="1" class="button" style="color:#b32d2e;border-color:#b32d2e;">Delete Scanned Orphan Images</button>
+                        </form>
+                    <?php else : ?>
+                        <p><strong>No orphan image files were found.</strong></p>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
+    }
+
     public function supplier_products_page() {
         if ( ! current_user_can( 'manage_options' ) ) {
             return;
@@ -4771,6 +4984,34 @@ final class TAQI_Life_Dropshipping {
             );
         }
 
+        if ( ! empty( $_POST['taqi_bulk_delete_action'] ) ) {
+            check_admin_referer( 'taqi_bulk_delete_action', 'taqi_bulk_delete_nonce' );
+            $action = sanitize_key( wp_unslash( $_POST['taqi_bulk_delete_action'] ) );
+            $ids    = ! empty( $_POST['product_ids'] ) && is_array( $_POST['product_ids'] ) ? array_map( 'absint', wp_unslash( $_POST['product_ids'] ) ) : array();
+            $deleted_products = 0;
+
+            if ( 'delete_products' === $action ) {
+                foreach ( array_unique( array_filter( $ids ) ) as $product_id ) {
+                    if ( ! current_user_can( 'edit_post', $product_id ) || 'taqi_product' !== get_post_type( $product_id ) || $this->supplier_key() !== get_post_meta( $product_id, '_taqi_supplier', true ) ) {
+                        continue;
+                    }
+
+                    $product = new TAQI_Life_Product( 'simple', $product_id );
+                    $deleted = $product->delete( true );
+                    if ( $deleted ) {
+                        ++$deleted_products;
+                    }
+                }
+            }
+
+            return array(
+                'message' => sprintf(
+                    'Batch product deletion finished: %d product(s) deleted with their unused supplier images. Shared images were preserved.',
+                    $deleted_products
+                ),
+            );
+        }
+
         if ( ! empty( $_POST['taqi_bulk_status_action'] ) ) {
             check_admin_referer( 'taqi_bulk_status_action', 'taqi_bulk_status_nonce' );
             $action = sanitize_key( wp_unslash( $_POST['taqi_bulk_status_action'] ) );
@@ -4943,11 +5184,13 @@ final class TAQI_Life_Dropshipping {
 
             <form method="post" id="taqi-imported-batch-form" class="taqi-status-toolbar">
                 <?php wp_nonce_field( 'taqi_bulk_status_action', 'taqi_bulk_status_nonce' ); ?>
+                <?php wp_nonce_field( 'taqi_bulk_delete_action', 'taqi_bulk_delete_nonce' ); ?>
                 <button type="button" class="button" id="taqi-imported-select-all-button">Select All</button>
                 <button type="button" class="button" id="taqi-imported-clear-button">Clear Selection</button>
                 <span class="taqi-selection-count"><strong id="taqi-imported-selected-count">0</strong> selected</span>
                 <button type="submit" name="taqi_bulk_status_action" value="publish" class="button button-primary" onclick="return taqiConfirmImportedBatch('publish');">Publish Selected</button>
                 <button type="submit" name="taqi_bulk_status_action" value="unpublish" class="button" onclick="return taqiConfirmImportedBatch('unpublish');">Unpublish Selected</button>
+                <button type="submit" name="taqi_bulk_delete_action" value="delete_products" class="button button-link-delete" onclick="return taqiConfirmImportedBatch('delete_products');">Delete Selected Products</button>
                 <span class="description">Select products below. Actions apply to the current page.</span>
             </form>
 
@@ -5127,6 +5370,9 @@ final class TAQI_Life_Dropshipping {
                         return false;
                     }
                     if ('unpublish' === action && !window.confirm('Unpublish all selected products and return them to Draft status?')) {
+                        return false;
+                    }
+                    if ('delete_products' === action && !window.confirm('Permanently delete all selected products and their unused supplier images? This cannot be undone.')) {
                         return false;
                     }
                     const form = document.getElementById('taqi-imported-batch-form');
