@@ -186,11 +186,14 @@ class CourierSettings {
                 // Module type is added via filter in constructor
 
                 // Localize script with WordPress REST API data
+                $initial_settings = $this->get_settings();
+                $initial_settings = is_object( $initial_settings ) && method_exists( $initial_settings, 'get_data' ) ? $initial_settings->get_data() : array();
                 wp_localize_script( 'bd-courier-react-js', 'wpApiSettings', [
                     'root'          => esc_url_raw( rest_url() ),
                     'nonce'         => wp_create_nonce( 'wp_rest' ),
                     'fallbackUrl'   => esc_url_raw( admin_url( 'admin.php?page=bd-courier-settings&bd_courier_api_proxy=1' ) ),
                     'fallbackNonce' => wp_create_nonce( 'bd_courier_admin_api_proxy' ),
+                    'initialSettings' => $initial_settings,
                 ]);
 
                 // Keep the React application unchanged on hosts where REST is
@@ -239,6 +242,17 @@ class CourierSettings {
         var route = apiRoute(input);
         var apiSettings = window.wpApiSettings || {};
         if (!route || !apiSettings.fallbackUrl || !apiSettings.fallbackNonce) return originalFetch(input, options);
+
+        // The live firewall can also replace the authenticated REST GET with
+        // an HTML challenge. The server already localized the current admin
+        // settings, so use that trusted snapshot for the initial screen load.
+        var method = String((options && options.method) || (input && input.method) || 'GET').toUpperCase();
+        if (route === 'settings' && method === 'GET' && apiSettings.initialSettings) {
+            return Promise.resolve(new Response(JSON.stringify(apiSettings.initialSettings), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            }));
+        }
 
         var separator = apiSettings.fallbackUrl.indexOf('?') === -1 ? '?' : '&';
         var proxyUrl = apiSettings.fallbackUrl + separator + 'bd_courier_route=' + encodeURIComponent(route) + '&bd_courier_proxy_nonce=' + encodeURIComponent(apiSettings.fallbackNonce);
@@ -437,6 +451,42 @@ JS
         (function () {
             if (window.bdCourierDirectTokenSaveInstalled) return;
             window.bdCourierDirectTokenSaveInstalled = true;
+
+            // Install a page-level bridge as a second layer. This remains
+            // available even if a bundled script initializes before the
+            // wp_add_inline_script wrapper above is emitted.
+            if (!window.bdCourierDirectApiProxyInstalled && typeof window.fetch === 'function') {
+                window.bdCourierDirectApiProxyInstalled = true;
+                var directOriginalFetch = window.fetch.bind(window);
+
+                function directApiRoute(input) {
+                    var url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                    var marker = '/bd-courier/v1/';
+                    var position = url.indexOf(marker);
+                    if (position === -1) return '';
+                    return url.slice(position + marker.length).split(/[?#]/)[0].replace(/^\/+|\/+$/g, '');
+                }
+
+                window.fetch = function (input, options) {
+                    var route = directApiRoute(input);
+                    var apiSettings = window.wpApiSettings || {};
+                    if (!route || !apiSettings.fallbackUrl || !apiSettings.fallbackNonce) {
+                        return directOriginalFetch(input, options);
+                    }
+
+                    var method = String((options && options.method) || (input && input.method) || 'GET').toUpperCase();
+                    if (route === 'settings' && method === 'GET' && apiSettings.initialSettings) {
+                        return Promise.resolve(new Response(JSON.stringify(apiSettings.initialSettings), {
+                            status: 200,
+                            headers: { 'Content-Type': 'application/json' }
+                        }));
+                    }
+
+                    var separator = apiSettings.fallbackUrl.indexOf('?') === -1 ? '?' : '&';
+                    var proxyUrl = apiSettings.fallbackUrl + separator + 'bd_courier_route=' + encodeURIComponent(route) + '&bd_courier_proxy_nonce=' + encodeURIComponent(apiSettings.fallbackNonce);
+                    return directOriginalFetch(proxyUrl, options);
+                };
+            }
 
             document.addEventListener('click', function (event) {
                 var button = event.target && event.target.closest ? event.target.closest('button') : null;
