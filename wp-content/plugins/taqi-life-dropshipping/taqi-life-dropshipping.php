@@ -2,7 +2,7 @@
 /**
  * Plugin Name: TAQI LIFE Dropshipping
  * Description: Standalone Mohasagor reseller dropshipping catalog and product manager.
- * Version: 2.1.0
+ * Version: 2.2.0
  * Author: TAQI LIFE
  */
 
@@ -394,11 +394,13 @@ final class TAQI_Life_Dropshipping {
             // Confirmed Mohasagor pricing model for TAQI LIFE:
             // sale_price = Cost Price, price = Maximum Selling Price.
             // Minimum Selling Price is calculated from Cost Price + configured minimum markup.
-            'pricing_model_version'    => '3',
-            // User-controlled pricing percentages.
-            // Minimum % defines the lowest allowed selling price above Cost Price.
-            // TAQI % defines the normal TAQI LIFE selling price above Cost Price.
+            'pricing_model_version'    => '4',
+            // Minimum markup may be a percentage of Cost Price or a fixed BDT amount.
+            'minimum_markup_type'      => 'percent',
             'minimum_markup_percent'   => '4.08',
+            'minimum_markup_amount'    => '0',
+            // TAQI price may be a percentage of Cost Price or the supplier maximum.
+            'taqi_markup_type'        => 'percent',
             'taqi_markup_percent'      => '20',
             'price_rounding'           => 'none',
             'enforce_minimum_price'    => 'yes',
@@ -434,7 +436,7 @@ final class TAQI_Life_Dropshipping {
          * interpret API sale_price as a customer-facing WooCommerce Sale Price.
          * Reset legacy pricing to the confirmed model and the safest default.
          */
-        if ( empty( $saved['pricing_model_version'] ) || '3' !== (string) $saved['pricing_model_version'] ) {
+        if ( empty( $saved['pricing_model_version'] ) || '4' !== (string) $saved['pricing_model_version'] ) {
             // Preserve the user's existing custom percentage when possible, but never
             // migrate an unsafe historical value blindly. v1.3.7 defaulted to 20%.
             $legacy_taqi_percent = isset( $saved['taqi_markup_percent'] )
@@ -448,9 +450,13 @@ final class TAQI_Life_Dropshipping {
                 $legacy_taqi_percent = 20;
             }
 
-            $settings['pricing_model_version']  = '3';
+            $settings['pricing_model_version']  = '4';
             $settings['price_mode']             = 'taqi_percent';
+            $settings['minimum_markup_type']   = isset( $saved['minimum_markup_type'] ) && in_array( $saved['minimum_markup_type'], array( 'percent', 'amount' ), true ) ? $saved['minimum_markup_type'] : 'percent';
             $settings['minimum_markup_percent'] = isset( $saved['minimum_markup_percent'] ) ? (string) max( 0, (float) $saved['minimum_markup_percent'] ) : '4.08';
+            $settings['minimum_markup_amount']  = isset( $saved['minimum_markup_amount'] ) ? (string) max( 0, (float) $saved['minimum_markup_amount'] ) : '0';
+            $settings['taqi_markup_type']      = isset( $saved['taqi_markup_type'] ) && in_array( $saved['taqi_markup_type'], array( 'percent', 'supplier_maximum' ), true ) ? $saved['taqi_markup_type'] : 'percent';
+            $settings['price_mode']             = 'supplier_maximum' === $settings['taqi_markup_type'] ? 'supplier_maximum' : 'taqi_percent';
             $settings['taqi_markup_percent']    = (string) $legacy_taqi_percent;
             $settings['markup_percent']         = (string) $legacy_taqi_percent; // legacy mirror only.
             $settings['fixed_markup']           = '0';
@@ -1034,10 +1040,13 @@ final class TAQI_Life_Dropshipping {
         }
 
         $settings = $this->settings();
+        $type     = isset( $settings['minimum_markup_type'] ) && 'amount' === $settings['minimum_markup_type'] ? 'amount' : 'percent';
         $percent  = isset( $settings['minimum_markup_percent'] ) ? max( 0, (float) $settings['minimum_markup_percent'] ) : 4.08;
+        $amount   = isset( $settings['minimum_markup_amount'] ) ? max( 0, (float) $settings['minimum_markup_amount'] ) : 0;
 
-        // Round UP to a whole BDT so ৳490 + 4.08% safely becomes ৳510, not ৳509.99.
-        $minimum = ceil( ( $cost + ( $cost * $percent / 100 ) ) - 0.0000001 );
+        // Round UP to a whole BDT so the configured minimum is never undercut.
+        $minimum_markup = 'amount' === $type ? $amount : ( $cost * $percent / 100 );
+        $minimum = ceil( ( $cost + $minimum_markup ) - 0.0000001 );
         $maximum = $this->supplier_maximum_selling_price( $product );
 
         if ( null !== $maximum && $maximum >= $cost && $minimum > $maximum ) {
@@ -1056,9 +1065,14 @@ final class TAQI_Life_Dropshipping {
         $warning  = '';
         $price_status = 'normal';
 
+        $minimum_type = isset( $settings['minimum_markup_type'] ) && 'amount' === $settings['minimum_markup_type'] ? 'amount' : 'percent';
         $minimum_percent = isset( $settings['minimum_markup_percent'] )
             ? max( 0, (float) $settings['minimum_markup_percent'] )
             : 4.08;
+        $minimum_amount = isset( $settings['minimum_markup_amount'] )
+            ? max( 0, (float) $settings['minimum_markup_amount'] )
+            : 0;
+        $taqi_type = isset( $settings['taqi_markup_type'] ) && 'supplier_maximum' === $settings['taqi_markup_type'] ? 'supplier_maximum' : 'percent';
         $taqi_percent = isset( $settings['taqi_markup_percent'] )
             ? max( 0, (float) $settings['taqi_markup_percent'] )
             : 20;
@@ -1067,34 +1081,38 @@ final class TAQI_Life_Dropshipping {
             $price_status = 'review_required';
             $warning = 'Cost Price (API sale_price) is missing. The product can still import, but its selling price needs review.';
         } else {
-            // TAQI LIFE selling price is always user-controlled percentage markup on Cost.
-            $target = $cost + ( $cost * $taqi_percent / 100 );
-            $target = $this->round_price( $target );
-
-            if ( 'yes' === $settings['enforce_minimum_price'] && null !== $minimum && $target < $minimum ) {
-                $target = $minimum;
-                $price_status = 'minimum_adjusted';
-                $warning = sprintf(
-                    'TAQI markup %.2f%% is below the minimum %.2f%% for this rule; Minimum Selling Price was used.',
-                    $taqi_percent,
-                    $minimum_percent
-                );
+            if ( 'supplier_maximum' === $taqi_type ) {
+                if ( null !== $maximum ) {
+                    // Use the supplier maximum exactly. It is already the
+                    // supplier's permitted upper selling price, so do not
+                    // apply local rounding or percentage markup.
+                    $target = $maximum;
+                } else {
+                    $price_status = 'review_required';
+                    $warning = 'Supplier Maximum Selling Price is missing. The product remains importable, but its selling price needs review.';
+                }
+            } else {
+                $target = $cost + ( $cost * $taqi_percent / 100 );
+                $target = $this->round_price( $target );
             }
 
-            if ( 'yes' === $settings['cap_at_maximum_price'] && null !== $maximum && $target > $maximum ) {
+            if ( 'yes' === $settings['enforce_minimum_price'] && null !== $target && null !== $minimum && $target < $minimum ) {
+                $target = $minimum;
+                $price_status = 'minimum_adjusted';
+                $warning = 'TAQI price is below the configured Minimum Selling Price; the minimum rule was used.';
+            }
+
+            if ( 'yes' === $settings['cap_at_maximum_price'] && null !== $target && null !== $maximum && $target > $maximum ) {
                 if ( $maximum >= $cost ) {
                     $target = $maximum;
                     $price_status = 'reduced_margin';
-                    $warning = sprintf(
-                        'TAQI markup %.2f%% is above the supplier Maximum Selling Price. The product remains importable and its price was capped at the maximum with a reduced margin.',
-                        $taqi_percent
-                    );
+                    $warning = 'Calculated TAQI price is above the supplier Maximum Selling Price. The product remains importable and its price was capped at the maximum with a reduced margin.';
                 } else {
                     $target = null;
                     $price_status = 'review_required';
                     $warning = 'Supplier Maximum Selling Price is below Cost Price. The product remains importable, but no unsafe selling price was applied.';
                 }
-            } elseif ( 'yes' !== $settings['cap_at_maximum_price'] && null !== $maximum && $target > $maximum ) {
+            } elseif ( 'yes' !== $settings['cap_at_maximum_price'] && null !== $target && null !== $maximum && $target > $maximum ) {
                 $price_status = 'above_maximum';
                 $warning = 'Calculated TAQI price is above the supplier Maximum Selling Price because the maximum-price safety rule is disabled.';
             }
@@ -1122,11 +1140,28 @@ final class TAQI_Life_Dropshipping {
             'selling'                 => $target,
             'profit'                  => $profit,
             'markup_percent'          => $markup_percent,
+            'minimum_markup_type'     => $minimum_type,
             'minimum_markup_percent'  => $minimum_percent,
+            'minimum_markup_amount'   => $minimum_amount,
+            'taqi_markup_type'        => $taqi_type,
             'taqi_markup_percent'     => $taqi_percent,
             'price_status'            => $price_status,
             'warning'                 => $warning,
         );
+    }
+
+    private function minimum_markup_label( $pricing ) {
+        if ( isset( $pricing['minimum_markup_type'] ) && 'amount' === $pricing['minimum_markup_type'] ) {
+            return number_format_i18n( (float) $pricing['minimum_markup_amount'], 2 ) . ' BDT amount';
+        }
+        return number_format_i18n( (float) $pricing['minimum_markup_percent'], 2 ) . '%';
+    }
+
+    private function taqi_price_rule_label( $pricing ) {
+        if ( isset( $pricing['taqi_markup_type'] ) && 'supplier_maximum' === $pricing['taqi_markup_type'] ) {
+            return 'Supplier Maximum Selling Price';
+        }
+        return number_format_i18n( (float) $pricing['taqi_markup_percent'], 2 ) . '%';
     }
 
     private function product_regular_price( $product ) {
@@ -3167,17 +3202,22 @@ final class TAQI_Life_Dropshipping {
             check_admin_referer( 'taqi_save_pricing_action', 'taqi_pricing_nonce' );
             $settings = $this->settings();
 
+            $minimum_type = isset( $_POST['minimum_markup_type'] ) && 'amount' === sanitize_key( wp_unslash( $_POST['minimum_markup_type'] ) ) ? 'amount' : 'percent';
             $minimum_percent = isset( $_POST['minimum_markup_percent'] )
                 ? max( 0, (float) wp_unslash( $_POST['minimum_markup_percent'] ) )
                 : 4.08;
+            $minimum_amount = isset( $_POST['minimum_markup_amount'] )
+                ? max( 0, (float) wp_unslash( $_POST['minimum_markup_amount'] ) )
+                : 0;
+            $taqi_type = isset( $_POST['taqi_markup_type'] ) && 'supplier_maximum' === sanitize_key( wp_unslash( $_POST['taqi_markup_type'] ) ) ? 'supplier_maximum' : 'percent';
             $taqi_percent = isset( $_POST['taqi_markup_percent'] )
                 ? max( 0, (float) wp_unslash( $_POST['taqi_markup_percent'] ) )
                 : 20;
 
-            // Business validation: TAQI's normal markup must not be lower than the
-            // configured minimum markup. Reject the save instead of silently changing
-            // the user's percentages.
-            if ( $taqi_percent < $minimum_percent ) {
+            // Percentage-to-percentage validation only applies when both rules
+            // are percentage based. Supplier Maximum mode is intentionally a
+            // separate price rule and does not need a TAQI percentage value.
+            if ( 'percent' === $minimum_type && 'percent' === $taqi_type && $taqi_percent < $minimum_percent ) {
                 $error = sprintf(
                     'TAQI Markup %% (%.2f%%) cannot be lower than Minimum Markup %% (%.2f%%). Pricing settings were not changed.',
                     $taqi_percent,
@@ -3186,12 +3226,15 @@ final class TAQI_Life_Dropshipping {
             } else {
                 $rounding = isset( $_POST['price_rounding'] ) ? sanitize_key( wp_unslash( $_POST['price_rounding'] ) ) : 'none';
 
-                $settings['pricing_model_version']  = '3';
-                $settings['price_mode']             = 'taqi_percent';
+                $settings['pricing_model_version']  = '4';
+                $settings['minimum_markup_type']    = $minimum_type;
                 $settings['minimum_markup_percent'] = (string) $minimum_percent;
+                $settings['minimum_markup_amount']  = (string) $minimum_amount;
+                $settings['taqi_markup_type']      = $taqi_type;
                 $settings['taqi_markup_percent']    = (string) $taqi_percent;
                 $settings['markup_percent']         = (string) $taqi_percent; // compatibility mirror only.
                 $settings['fixed_markup']           = '0';
+                $settings['price_mode']             = 'supplier_maximum' === $taqi_type ? 'supplier_maximum' : 'taqi_percent';
                 $settings['price_rounding']         = in_array( $rounding, array( 'none', '10', '50', '100' ), true ) ? $rounding : 'none';
                 $settings['enforce_minimum_price']  = ! empty( $_POST['enforce_minimum_price'] ) ? 'yes' : 'no';
                 $settings['cap_at_maximum_price']   = ! empty( $_POST['cap_at_maximum_price'] ) ? 'yes' : 'no';
@@ -3201,13 +3244,15 @@ final class TAQI_Life_Dropshipping {
 
                 $this->settings_cache = null;
                 update_option( self::OPTION_SETTINGS, $settings, false );
-                $message = 'Pricing rules saved. Minimum % controls the lowest allowed price; TAQI % controls the normal TAQI LIFE selling price.';
+                $message = 'Pricing rules saved. Minimum markup and TAQI price rules are now active for previews, imports, and synchronization.';
             }
         }
 
         $settings = $this->settings();
         $example  = array( 'sale_price' => 490, 'price' => 690 );
         $example_pricing = $this->pricing_breakdown( $example );
+        $minimum_markup_type = isset( $settings['minimum_markup_type'] ) && 'amount' === $settings['minimum_markup_type'] ? 'amount' : 'percent';
+        $taqi_markup_type = isset( $settings['taqi_markup_type'] ) && 'supplier_maximum' === $settings['taqi_markup_type'] ? 'supplier_maximum' : 'percent';
         ?>
         <div class="wrap">
             <h1>Pricing Rules</h1>
@@ -3216,7 +3261,7 @@ final class TAQI_Life_Dropshipping {
 
             <div class="notice notice-info inline" style="max-width:1000px;margin-top:16px;">
                 <p><strong>Mohasagor mapping:</strong> <code>sale_price</code> = <strong>Cost Price</strong>; <code>price</code> = <strong>Maximum Selling Price</strong>.</p>
-                <p><strong>Your control:</strong> Minimum Selling Price = Cost + <strong>Minimum %</strong>; TAQI LIFE Selling Price = Cost + <strong>TAQI %</strong>. Product API values are never changed by these settings.</p>
+                <p><strong>Your control:</strong> Minimum Selling Price = Cost + <strong>Minimum Markup</strong>; TAQI LIFE Selling Price = either <strong>Cost + TAQI Markup %</strong> or the supplier's <strong>Maximum Selling Price</strong>. Product API values are never changed by these settings.</p>
             </div>
 
             <form method="post" style="max-width:1000px;background:#fff;border:1px solid #dcdcde;padding:22px;margin-top:18px;">
@@ -3231,13 +3276,40 @@ final class TAQI_Life_Dropshipping {
                         <td><code>price</code> <strong>= Maximum Selling Price</strong><p class="description">Read-only supplier value and optional upper safety limit.</p></td>
                     </tr>
                     <tr>
+                        <th><label for="minimum_markup_type">Minimum Markup Rule</label></th>
+                        <td>
+                            <select name="minimum_markup_type" id="minimum_markup_type">
+                                <option value="percent" <?php selected( $minimum_markup_type, 'percent' ); ?>>Percentage of Cost Price</option>
+                                <option value="amount" <?php selected( $minimum_markup_type, 'amount' ); ?>>Fixed Amount (BDT)</option>
+                            </select>
+                            <p class="description">Sets the minimum permitted selling price above Cost Price.</p>
+                        </td>
+                    </tr>
+                    <tr id="taqi-minimum-percent-row">
                         <th><label for="minimum_markup_percent">Minimum Markup %</label></th>
                         <td>
                             <input type="number" step="0.01" min="0" name="minimum_markup_percent" id="minimum_markup_percent" value="<?php echo esc_attr( $settings['minimum_markup_percent'] ); ?>"> %
                             <p class="description">Defines the minimum permitted selling price. Example: Cost ৳490 + 4.08% = Minimum ৳510 (rounded up to whole BDT).</p>
                         </td>
                     </tr>
+                    <tr id="taqi-minimum-amount-row">
+                        <th><label for="minimum_markup_amount">Minimum Markup Amount</label></th>
+                        <td>
+                            <input type="number" step="0.01" min="0" name="minimum_markup_amount" id="minimum_markup_amount" value="<?php echo esc_attr( $settings['minimum_markup_amount'] ); ?>"> BDT
+                            <p class="description">Fixed amount added to Cost Price. Example: Cost BDT 490 + BDT 30 = minimum BDT 520.</p>
+                        </td>
+                    </tr>
                     <tr>
+                        <th><label for="taqi_markup_type">TAQI Price Rule</label></th>
+                        <td>
+                            <select name="taqi_markup_type" id="taqi_markup_type">
+                                <option value="percent" <?php selected( $taqi_markup_type, 'percent' ); ?>>TAQI Markup Percentage</option>
+                                <option value="supplier_maximum" <?php selected( $taqi_markup_type, 'supplier_maximum' ); ?>>Supplier Maximum Selling Price</option>
+                            </select>
+                            <p class="description">Choose Cost + TAQI Markup % or the supplier's Maximum Selling Price.</p>
+                        </td>
+                    </tr>
+                    <tr id="taqi-percent-row">
                         <th><label for="taqi_markup_percent">TAQI Markup %</label></th>
                         <td>
                             <input type="number" step="0.01" min="0" name="taqi_markup_percent" id="taqi_markup_percent" value="<?php echo esc_attr( $settings['taqi_markup_percent'] ); ?>"> %
@@ -3271,9 +3343,9 @@ final class TAQI_Life_Dropshipping {
                 <h2 style="margin-top:0;">Example Price Preview</h2>
                 <table class="widefat striped" style="max-width:800px;"><tbody>
                     <tr><th>Cost Price</th><td><input type="number" id="taqi-preview-cost" min="0" step="0.01" value="490" style="max-width:160px;"> <span>BDT</span></td><td><code>sale_price</code><br><span class="description">Preview only; supplier data is not changed.</span></td></tr>
-                    <tr><th>Minimum Markup</th><td id="taqi-preview-minimum-markup"><?php echo esc_html( number_format_i18n( (float) $settings['minimum_markup_percent'], 2 ) ); ?>%</td><td>User setting</td></tr>
-                    <tr><th>Minimum Selling Price</th><td id="taqi-preview-minimum"><?php echo wp_kses_post( $this->format_money( $example_pricing['minimum'] ) ); ?></td><td>Cost + Minimum %</td></tr>
-                    <tr><th>TAQI Markup</th><td id="taqi-preview-taqi-markup"><?php echo esc_html( number_format_i18n( (float) $settings['taqi_markup_percent'], 2 ) ); ?>%</td><td>User setting</td></tr>
+                    <tr><th>Minimum Markup</th><td id="taqi-preview-minimum-markup"><?php echo 'amount' === $minimum_markup_type ? esc_html( number_format_i18n( (float) $settings['minimum_markup_amount'], 2 ) . ' BDT' ) : esc_html( number_format_i18n( (float) $settings['minimum_markup_percent'], 2 ) . '%' ); ?></td><td>User setting</td></tr>
+                    <tr><th>Minimum Selling Price</th><td id="taqi-preview-minimum"><?php echo wp_kses_post( $this->format_money( $example_pricing['minimum'] ) ); ?></td><td>Cost + Minimum Markup</td></tr>
+                    <tr><th>TAQI Price Rule</th><td id="taqi-preview-taqi-markup"><?php echo 'supplier_maximum' === $taqi_markup_type ? 'Supplier Maximum Selling Price' : esc_html( number_format_i18n( (float) $settings['taqi_markup_percent'], 2 ) . '%' ); ?></td><td>User setting</td></tr>
                     <tr><th>TAQI LIFE Selling Price</th><td><strong id="taqi-preview-selling"><?php echo null !== $example_pricing['selling'] ? wp_kses_post( $this->format_money( $example_pricing['selling'] ) ) : 'Price review required'; ?></strong></td><td>Cost + TAQI %</td></tr>
                     <tr><th>Supplier Maximum Selling Price</th><td id="taqi-preview-maximum"><?php echo wp_kses_post( $this->format_money( $example_pricing['maximum'] ) ); ?></td><td><code>price</code></td></tr>
                     <tr><th>TAQI Profit</th><td id="taqi-preview-profit"><?php echo null !== $example_pricing['profit'] ? wp_kses_post( $this->format_money( $example_pricing['profit'] ) ) : '—'; ?></td><td id="taqi-preview-profit-markup"><?php echo null !== $example_pricing['markup_percent'] ? esc_html( number_format_i18n( $example_pricing['markup_percent'], 2 ) . '% actual markup' ) : '—'; ?></td></tr>
@@ -3286,7 +3358,26 @@ final class TAQI_Life_Dropshipping {
                     var costInput = document.getElementById('taqi-preview-cost');
                     if (!costInput) { return; }
 
+                    var minimumTypeInput = document.getElementById('minimum_markup_type');
+                    var minimumPercentRow = document.getElementById('taqi-minimum-percent-row');
+                    var minimumAmountRow = document.getElementById('taqi-minimum-amount-row');
+                    var taqiTypeInput = document.getElementById('taqi_markup_type');
+                    var taqiPercentRow = document.getElementById('taqi-percent-row');
+
+                    function updatePricingRuleFields() {
+                        if (minimumPercentRow) { minimumPercentRow.style.display = minimumTypeInput && 'amount' === minimumTypeInput.value ? 'none' : ''; }
+                        if (minimumAmountRow) { minimumAmountRow.style.display = minimumTypeInput && 'amount' === minimumTypeInput.value ? '' : 'none'; }
+                        if (taqiPercentRow) { taqiPercentRow.style.display = taqiTypeInput && 'supplier_maximum' === taqiTypeInput.value ? 'none' : ''; }
+                    }
+
+                    if (minimumTypeInput) { minimumTypeInput.addEventListener('change', updatePricingRuleFields); }
+                    if (taqiTypeInput) { taqiTypeInput.addEventListener('change', updatePricingRuleFields); }
+                    updatePricingRuleFields();
+
+                    var minimumType = <?php echo wp_json_encode( $minimum_markup_type ); ?>;
                     var minimumPercent = <?php echo wp_json_encode( (float) $settings['minimum_markup_percent'] ); ?>;
+                    var minimumAmount = <?php echo wp_json_encode( (float) $settings['minimum_markup_amount'] ); ?>;
+                    var taqiType = <?php echo wp_json_encode( $taqi_markup_type ); ?>;
                     var taqiPercent = <?php echo wp_json_encode( (float) $settings['taqi_markup_percent'] ); ?>;
                     var maximum = <?php echo wp_json_encode( (float) $example_pricing['maximum'] ); ?>;
                     var rounding = <?php echo wp_json_encode( (string) $settings['price_rounding'] ); ?>;
@@ -3318,10 +3409,10 @@ final class TAQI_Life_Dropshipping {
                             warning = 'Enter a valid Cost Price.';
                         }
 
-                        minimum = Math.ceil((cost + (cost * minimumPercent / 100)) - 0.0000001);
+                        minimum = Math.ceil((cost + ('amount' === minimumType ? minimumAmount : (cost * minimumPercent / 100))) - 0.0000001);
                         if (maximum >= cost && minimum > maximum) { minimum = maximum; }
 
-                        selling = roundPrice(cost + (cost * taqiPercent / 100));
+                        selling = 'supplier_maximum' === taqiType ? maximum : roundPrice(cost + (cost * taqiPercent / 100));
                         if (enforceMinimum && selling < minimum) {
                             selling = minimum;
                             warning = 'Minimum Selling Price was used because the calculated TAQI price was below the minimum.';
@@ -3340,9 +3431,9 @@ final class TAQI_Life_Dropshipping {
                             actualMarkup = cost > 0 ? (profit / cost) * 100 : null;
                         }
 
-                        document.getElementById('taqi-preview-minimum-markup').textContent = minimumPercent.toFixed(2) + '%';
+                        document.getElementById('taqi-preview-minimum-markup').textContent = 'amount' === minimumType ? minimumAmount.toFixed(2) + ' BDT' : minimumPercent.toFixed(2) + '%';
                         document.getElementById('taqi-preview-minimum').textContent = formatMoney(minimum);
-                        document.getElementById('taqi-preview-taqi-markup').textContent = taqiPercent.toFixed(2) + '%';
+                        document.getElementById('taqi-preview-taqi-markup').textContent = 'supplier_maximum' === taqiType ? 'Supplier Maximum Selling Price' : taqiPercent.toFixed(2) + '%';
                         document.getElementById('taqi-preview-selling').textContent = formatMoney(selling);
                         document.getElementById('taqi-preview-maximum').textContent = formatMoney(maximum);
                         document.getElementById('taqi-preview-profit').textContent = null === profit ? '—' : formatMoney(profit);
@@ -5579,7 +5670,7 @@ final class TAQI_Life_Dropshipping {
                                 <td><strong><?php echo esc_html( $name ); ?></strong><br><small>Supplier ID: <?php echo esc_html( $supplier_id ? $supplier_id : '—' ); ?></small></td>
                                 <td><?php echo esc_html( $category['name'] ? $category['name'] : '—' ); ?><br><small>ID: <?php echo esc_html( $category['id'] ? $category['id'] : '—' ); ?></small></td>
                                 <td><?php echo esc_html( $code ? $code : '—' ); ?></td>
-                                <?php $row_pricing = $this->pricing_breakdown( $product ); ?>
+                                <?php $row_pricing = $this->pricing_breakdown( $product ); $row_minimum_rule = $this->minimum_markup_label( $row_pricing ); $row_taqi_rule = $this->taqi_price_rule_label( $row_pricing ); ?>
                                 <td><?php echo null !== $row_pricing['cost'] ? $this->format_money( $row_pricing['cost'] ) : '—'; ?></td>
                                 <td><?php echo null !== $row_pricing['minimum'] ? $this->format_money( $row_pricing['minimum'] ) : '—'; ?></td>
                                 <td><?php echo null !== $row_pricing['maximum'] ? $this->format_money( $row_pricing['maximum'] ) : '—'; ?></td>
@@ -5602,7 +5693,7 @@ final class TAQI_Life_Dropshipping {
                                     <?php endif; ?>
                                 </td>
                             </tr>
-                            <tr id="<?php echo esc_attr( $detail_id ); ?>" style="display:none;background:#f6f7f7;"><td></td><td colspan="10"><p><strong>Supplier images detected:</strong> <?php echo esc_html( $supplier_image_count ); ?></p><p><strong>Price diagnostics:</strong> Cost (API <code>sale_price</code>) = <?php echo null !== $row_pricing['cost'] ? wp_kses_post( $this->format_money( $row_pricing['cost'] ) ) : '—'; ?> &nbsp; | &nbsp; Minimum <?php echo esc_html( number_format_i18n( $row_pricing['minimum_markup_percent'], 2 ) ); ?>% = <?php echo null !== $row_pricing['minimum'] ? wp_kses_post( $this->format_money( $row_pricing['minimum'] ) ) : '—'; ?> &nbsp; | &nbsp; TAQI <?php echo esc_html( number_format_i18n( $row_pricing['taqi_markup_percent'], 2 ) ); ?>% = <strong><?php echo null !== $row_pricing['selling'] ? wp_kses_post( $this->format_money( $row_pricing['selling'] ) ) : 'Price review required'; ?></strong> &nbsp; | &nbsp; Maximum (API <code>price</code>) = <?php echo null !== $row_pricing['maximum'] ? wp_kses_post( $this->format_money( $row_pricing['maximum'] ) ) : '—'; ?><?php if ( ! empty( $row_pricing['warning'] ) ) : ?> <span style="color:#b32d2e;"><?php echo esc_html( $row_pricing['warning'] ); ?></span><?php endif; ?></p><strong>Description:</strong> <?php echo esc_html( $details ? wp_trim_words( $details, 70, '…' ) : 'No description in this API response.' ); ?><?php if ( $has_vars && ! $can_var ) : ?><p><em>Supplier variant references were detected, but readable Size/Color values are unavailable in the current Product API payload. Variation Mapping will show only safely mappable values; unresolved IDs are diagnostic only.</em></p><?php elseif ( $can_var ) : ?><p><strong>Detected attributes:</strong> <?php echo esc_html( implode( ', ', array_keys( $model['attributes'] ) ) ); ?></p><?php endif; ?></td></tr>
+                            <tr id="<?php echo esc_attr( $detail_id ); ?>" style="display:none;background:#f6f7f7;"><td></td><td colspan="10"><p><strong>Supplier images detected:</strong> <?php echo esc_html( $supplier_image_count ); ?></p><p><strong>Price diagnostics:</strong> Cost (API <code>sale_price</code>) = <?php echo null !== $row_pricing['cost'] ? wp_kses_post( $this->format_money( $row_pricing['cost'] ) ) : '—'; ?> &nbsp; | &nbsp; Minimum <?php echo esc_html( $row_minimum_rule ); ?> = <?php echo null !== $row_pricing['minimum'] ? wp_kses_post( $this->format_money( $row_pricing['minimum'] ) ) : '—'; ?> &nbsp; | &nbsp; TAQI <?php echo esc_html( $row_taqi_rule ); ?> = <strong><?php echo null !== $row_pricing['selling'] ? wp_kses_post( $this->format_money( $row_pricing['selling'] ) ) : 'Price review required'; ?></strong> &nbsp; | &nbsp; Maximum (API <code>price</code>) = <?php echo null !== $row_pricing['maximum'] ? wp_kses_post( $this->format_money( $row_pricing['maximum'] ) ) : '—'; ?><?php if ( ! empty( $row_pricing['warning'] ) ) : ?> <span style="color:#b32d2e;"><?php echo esc_html( $row_pricing['warning'] ); ?></span><?php endif; ?></p><strong>Description:</strong> <?php echo esc_html( $details ? wp_trim_words( $details, 70, '…' ) : 'No description in this API response.' ); ?><?php if ( $has_vars && ! $can_var ) : ?><p><em>Supplier variant references were detected, but readable Size/Color values are unavailable in the current Product API payload. Variation Mapping will show only safely mappable values; unresolved IDs are diagnostic only.</em></p><?php elseif ( $can_var ) : ?><p><strong>Detected attributes:</strong> <?php echo esc_html( implode( ', ', array_keys( $model['attributes'] ) ) ); ?></p><?php endif; ?></td></tr>
                         <?php endforeach; ?>
                     <?php endif; ?>
                     </tbody>
@@ -6682,8 +6773,8 @@ final class TAQI_Life_Dropshipping {
         <p><strong>Supplier Code:</strong><br><?php echo esc_html( $supplier_code ? $supplier_code : '—' ); ?></p>
         <p><strong>Supplier Category ID:</strong><br><?php echo esc_html( $category_id ? $category_id : '—' ); ?></p>
         <p><strong>Cost Price (API sale_price):</strong><br><?php echo null !== $meta_pricing['cost'] ? wp_kses_post( $this->format_money( $meta_pricing['cost'] ) ) : '—'; ?></p>
-        <p><strong>Minimum Selling Price (<?php echo esc_html( number_format_i18n( $meta_pricing['minimum_markup_percent'], 2 ) ); ?>%):</strong><br><?php echo null !== $meta_pricing['minimum'] ? wp_kses_post( $this->format_money( $meta_pricing['minimum'] ) ) : '—'; ?></p>
-        <p><strong>TAQI Selling Price (<?php echo esc_html( number_format_i18n( $meta_pricing['taqi_markup_percent'], 2 ) ); ?>%):</strong><br><?php echo null !== $meta_pricing['selling'] ? wp_kses_post( $this->format_money( $meta_pricing['selling'] ) ) : '—'; ?></p>
+        <p><strong>Minimum Selling Price (<?php echo esc_html( $this->minimum_markup_label( $meta_pricing ) ); ?>):</strong><br><?php echo null !== $meta_pricing['minimum'] ? wp_kses_post( $this->format_money( $meta_pricing['minimum'] ) ) : '—'; ?></p>
+        <p><strong>TAQI Selling Price (<?php echo esc_html( $this->taqi_price_rule_label( $meta_pricing ) ); ?>):</strong><br><?php echo null !== $meta_pricing['selling'] ? wp_kses_post( $this->format_money( $meta_pricing['selling'] ) ) : '—'; ?></p>
         <p><strong>Maximum Selling Price (API price):</strong><br><?php echo null !== $meta_pricing['maximum'] ? wp_kses_post( $this->format_money( $meta_pricing['maximum'] ) ) : '—'; ?></p>
         <p><strong>TAQI LIFE Current Price:</strong><br><?php echo '' !== (string) $current_price ? esc_html( number_format_i18n( (float) $current_price, 2 ) ) : '—'; ?></p>
         <p><strong>Sync Status:</strong><br><?php echo 'cancelled' === $sync_status ? '<strong style="color:#b32d2e;">Cancelled</strong>' : '<strong style="color:#008a20;">Active</strong>'; ?></p>
