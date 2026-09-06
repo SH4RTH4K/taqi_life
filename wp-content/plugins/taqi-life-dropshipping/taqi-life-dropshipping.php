@@ -5149,9 +5149,13 @@ final class TAQI_Life_Dropshipping {
         $item       = isset( $_POST['batch_item'] ) ? max( 0, absint( $_POST['batch_item'] ) ) : 0;
         $start_page = isset( $_POST['batch_start'] ) ? max( 1, absint( $_POST['batch_start'] ) ) : $page;
         $total      = isset( $_POST['batch_total'] ) ? min( 50, max( $start_page, absint( $_POST['batch_total'] ) ) ) : $start_page;
+        $import_limit = isset( $_POST['batch_import_limit'] ) ? min( 1000, absint( $_POST['batch_import_limit'] ) ) : 0;
         $valid_actions = array( 'all_import', 'all_resync', 'all_resync_price', 'all_resync_images', 'all_cancel' );
         if ( ! in_array( $action, $valid_actions, true ) ) {
             $this->send_batch_json( false, array( 'message' => 'Invalid batch action.' ), 400 );
+        }
+        if ( 'all_import' !== $action ) {
+            $import_limit = 0;
         }
 
         $skip_images = ! empty( $_POST['skip_images'] ) && 'true' === sanitize_key( wp_unslash( $_POST['skip_images'] ) );
@@ -5190,6 +5194,7 @@ final class TAQI_Life_Dropshipping {
             $import_category_path     = isset( $checkpoint['import_category_path'] ) ? sanitize_text_field( $checkpoint['import_category_path'] ) : $import_category_path;
             $supplier_category_filter = isset( $checkpoint['supplier_category_filter'] ) ? sanitize_text_field( $checkpoint['supplier_category_filter'] ) : $supplier_category_filter;
             $skip_images              = ! empty( $checkpoint['skip_images'] );
+            $import_limit             = 'all_import' === $action ? min( 1000, absint( isset( $checkpoint['import_limit'] ) ? $checkpoint['import_limit'] : $import_limit ) ) : 0;
         } else {
             $checkpoint = array(
                 'token'                    => $token,
@@ -5203,12 +5208,22 @@ final class TAQI_Life_Dropshipping {
                 'import_category_path'     => $import_category_path,
                 'supplier_category_filter' => $supplier_category_filter,
                 'skip_images'              => $skip_images,
+                'import_limit'             => $import_limit,
+                'imported'                 => 0,
                 'processed'                => 0,
                 'skipped'                  => 0,
                 'failed'                   => 0,
                 'errors'                   => array(),
                 'status'                   => 'running',
             );
+        }
+
+        // The durable imported count is the authority. A retried browser
+        // request cannot exceed the number entered in Import count.
+        if ( 'all_import' === $action && $import_limit && absint( isset( $checkpoint['imported'] ) ? $checkpoint['imported'] : 0 ) >= $import_limit ) {
+            $checkpoint['status'] = 'complete';
+            $this->save_catalog_batch_checkpoint( $checkpoint );
+            $this->send_batch_json( true, array( 'done' => true, 'page_done' => false, 'processed' => 0, 'imported' => 0, 'skipped' => 0, 'failed' => 0, 'checkpoint' => $checkpoint, 'message' => 'Requested import count reached.' ) );
         }
 
         // Save the current item before expensive API/image work. If PHP is
@@ -5255,15 +5270,20 @@ final class TAQI_Life_Dropshipping {
         // hosting does not terminate the request with HTTP 503. When images
         // are skipped, use the larger chunk to reduce AJAX overhead.
         $downloads_images = ( 'all_import' === $action && ! $skip_images ) || 'images' === $sync_mode || ( 'all_resync' === $action && ! $skip_images );
-        $chunk_size    = $downloads_images ? 1 : self::BATCH_CHUNK_SIZE;
+        // A limited import is one supplier item per request. This guarantees
+        // the user-selected count is never exceeded, even when images are
+        // skipped and the normal batch size is larger.
+        $chunk_size    = $downloads_images || ( 'all_import' === $action && $import_limit ) ? 1 : self::BATCH_CHUNK_SIZE;
         $product_count = count( $products );
         $next_item     = min( $product_count, $item + $chunk_size );
         $linked_map    = in_array( $action, array( 'all_resync', 'all_resync_price', 'all_resync_images', 'all_cancel' ), true ) ? $this->linked_products_map() : array();
         $processed  = 0;
+        $imported   = 0;
         $skipped    = 0;
         $failed     = 0;
         $errors     = array();
         $checkpoint_base_processed = absint( isset( $checkpoint['processed'] ) ? $checkpoint['processed'] : 0 );
+        $checkpoint_base_imported  = absint( isset( $checkpoint['imported'] ) ? $checkpoint['imported'] : 0 );
         $checkpoint_base_skipped   = absint( isset( $checkpoint['skipped'] ) ? $checkpoint['skipped'] : 0 );
         $checkpoint_base_failed    = absint( isset( $checkpoint['failed'] ) ? $checkpoint['failed'] : 0 );
         $checkpoint_base_errors    = isset( $checkpoint['errors'] ) ? (array) $checkpoint['errors'] : array();
@@ -5305,6 +5325,9 @@ final class TAQI_Life_Dropshipping {
                 $errors[]     = $product_name . ' (ID ' . $supplier_id . '): ' . $result->get_error_message();
             } elseif ( null !== $result ) {
                 ++$processed;
+                if ( 'all_import' === $action && isset( $result['status'] ) && 'imported' === $result['status'] ) {
+                    ++$imported;
+                }
             }
 
             $checkpoint['current_item_active'] = false;
@@ -5316,6 +5339,7 @@ final class TAQI_Life_Dropshipping {
             $checkpoint['page']      = $page;
             $checkpoint['item']      = $batch_item + 1;
             $checkpoint['processed'] = $checkpoint_base_processed + $processed;
+            $checkpoint['imported']  = $checkpoint_base_imported + $imported;
             $checkpoint['skipped']   = $checkpoint_base_skipped + $skipped;
             $checkpoint['failed']    = $checkpoint_base_failed + $failed;
             $checkpoint['errors']    = array_slice( array_merge( $checkpoint_base_errors, $errors ), -20 );
@@ -5326,11 +5350,13 @@ final class TAQI_Life_Dropshipping {
         $total                    = min( $total, $supplier_last_page );
         $checkpoint['end_page']   = $total;
         $checkpoint['processed']  = $checkpoint_base_processed + $processed;
+        $checkpoint['imported']   = $checkpoint_base_imported + $imported;
         $checkpoint['skipped']    = $checkpoint_base_skipped + $skipped;
         $checkpoint['failed']     = $checkpoint_base_failed + $failed;
         $checkpoint['errors']     = array_slice( array_merge( $checkpoint_base_errors, $errors ), -20 );
         $page_done              = $next_item >= $product_count;
-        $done                   = $page_done && $page >= $total;
+        $limit_reached          = 'all_import' === $action && $import_limit && $checkpoint['imported'] >= $import_limit;
+        $done                   = $limit_reached || ( $page_done && $page >= $total );
         $checkpoint['page']     = $done ? $page : ( $page_done ? $page + 1 : $page );
         $checkpoint['item']     = $page_done ? 0 : $next_item;
         $checkpoint['status']   = $done ? 'complete' : 'running';
@@ -5345,12 +5371,15 @@ final class TAQI_Life_Dropshipping {
                 'count'     => $product_count,
                 'total'     => $total,
                 'processed' => $processed,
+                'imported'  => $imported,
+                'import_limit' => $import_limit,
                 'skipped'   => $skipped,
                 'failed'    => $failed,
                 'errors'    => $errors,
                 'total_pages' => $supplier_last_page,
                 'page_done' => $page_done,
                 'done'      => $done,
+                'limit_reached' => $limit_reached,
                 'checkpoint' => $checkpoint,
             )
         );
@@ -6250,6 +6279,7 @@ final class TAQI_Life_Dropshipping {
                 <input type="text" name="taqi_import_category_path" form="taqi-product-import-form" placeholder="Or create path: Electronics > Chargers" style="min-width:260px;">
                 <label><strong>From page:</strong> <input type="number" id="taqi_import_start_page" form="taqi-product-import-form" min="1" max="50" step="1" value="1" style="width:70px;"></label>
                 <label><strong>To page:</strong> <input type="number" id="taqi_import_end_page" form="taqi-product-import-form" min="1" max="50" step="1" placeholder="All" style="width:70px;"></label>
+                <label title="Optional. Import this many new products from the selected page range. Leave empty to import every matching product."><strong>Import count:</strong> <input type="number" id="taqi_import_limit" form="taqi-product-import-form" min="1" max="1000" step="1" placeholder="All" style="width:78px;"></label>
                 <button class="button">Search</button>
                 <?php if ( $search || $category_filter ) : ?><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=taqi-dropshipping-products&supplier_page=' . $api_page ) ); ?>">Clear</a><?php endif; ?>
             </form>
@@ -6368,21 +6398,32 @@ final class TAQI_Life_Dropshipping {
             });
             const startPageControl = document.getElementById('taqi_import_start_page');
             const endPageControl = document.getElementById('taqi_import_end_page');
+            const importLimitControl = document.getElementById('taqi_import_limit');
+            function importLimitValue() {
+                if (!importLimitControl || !importLimitControl.value) return 0;
+                return Math.max(1, Math.min(1000, Number(importLimitControl.value) || 0));
+            }
             function updateAllPageLabels() {
                 const start = startPageControl && startPageControl.value ? Math.max(1, Math.min(50, Number(startPageControl.value))) : 1;
                 const end = endPageControl && endPageControl.value ? Math.max(start, Math.min(50, Number(endPageControl.value))) : <?php echo absint( $batch_last_page ); ?>;
+                const importLimit = importLimitValue();
                 const filteredMode = <?php echo $category_filter ? 'true' : 'false'; ?>;
                 const labels = filteredMode
                     ? {all_import: 'Import Filtered Products', all_resync_price: 'Sync Price/Data for Filtered Products', all_resync_images: 'Sync Images for Filtered Products', all_cancel: 'Cancel Filtered Products'}
                     : {all_import: 'Import All ', all_resync_price: 'Sync Price/Data All ', all_resync_images: 'Sync Images All ', all_cancel: 'Cancel All '};
                 document.querySelectorAll('[data-all-action]').forEach(function (button) {
                     const action = button.dataset.allAction;
+                    if (action === 'all_import' && importLimit) {
+                        button.textContent = 'Import First ' + importLimit + ' Products';
+                        return;
+                    }
                     if (labels[action]) button.textContent = filteredMode ? labels[action] : labels[action] + (start === end ? 'Page ' + start : 'Pages ' + start + '-' + end);
                 });
             }
-            if (startPageControl || endPageControl) {
+            if (startPageControl || endPageControl || importLimitControl) {
                 if (startPageControl) startPageControl.addEventListener('input', updateAllPageLabels);
                 if (endPageControl) endPageControl.addEventListener('input', updateAllPageLabels);
+                if (importLimitControl) importLimitControl.addEventListener('input', updateAllPageLabels);
                 updateAllPageLabels();
             }
             const importCategory = document.getElementById('taqi_import_category_id');
@@ -6481,7 +6522,8 @@ final class TAQI_Life_Dropshipping {
                 serverCheckpoint = checkpoint;
                 resumeNotice.hidden = false;
                 if (resumeDetail) {
-                    resumeDetail.textContent = batchActionLabel(checkpoint.batch_action) + ' stopped at page ' + Number(checkpoint.page || 1) + ', next product ' + (Number(checkpoint.item || 0) + 1) + '. Completed: ' + Number(checkpoint.processed || 0) + '; skipped: ' + Number(checkpoint.skipped || 0) + '; failed: ' + Number(checkpoint.failed || 0) + '.';
+                    const limitDetail = checkpoint.batch_action === 'all_import' && Number(checkpoint.import_limit || 0) ? '; imported: ' + Number(checkpoint.imported || 0) + ' of ' + Number(checkpoint.import_limit) : '';
+                    resumeDetail.textContent = batchActionLabel(checkpoint.batch_action) + ' stopped at page ' + Number(checkpoint.page || 1) + ', next product ' + (Number(checkpoint.item || 0) + 1) + '. Completed: ' + Number(checkpoint.processed || 0) + limitDetail + '; skipped: ' + Number(checkpoint.skipped || 0) + '; failed: ' + Number(checkpoint.failed || 0) + '.';
                 }
             }
 
@@ -6534,6 +6576,7 @@ final class TAQI_Life_Dropshipping {
                 batchCancelled = false;
                 const requestedStart = startPageControl && startPageControl.value ? Math.max(1, Math.min(50, Number(startPageControl.value))) : 1;
                 const requestedEnd = endPageControl && endPageControl.value ? Math.max(requestedStart, Math.min(50, Number(endPageControl.value))) : <?php echo absint( $batch_last_page ); ?>;
+                const requestedImportLimit = button.dataset.allAction === 'all_import' ? importLimitValue() : 0;
                 const resuming = checkpoint && checkpoint.status === 'running';
                 const config = resuming ? checkpoint : {
                     token: newBatchToken(),
@@ -6546,6 +6589,8 @@ final class TAQI_Life_Dropshipping {
                     import_category_path: (document.querySelector('[name="taqi_import_category_path"]') || {}).value || '',
                     supplier_category_filter: (document.querySelector('[name="supplier_category"]') || {}).value || '',
                     skip_images: button.dataset.allAction === 'all_import' && !!(document.getElementById('taqi-skip-images-checkbox') || {}).checked,
+                    import_limit: requestedImportLimit,
+                    imported: 0,
                     processed: 0,
                     skipped: 0,
                     failed: 0,
@@ -6555,6 +6600,8 @@ final class TAQI_Life_Dropshipping {
                 let item = Math.max(0, Number(config.item || 0));
                 let total = Math.max(page, Number(config.end_page || requestedEnd));
                 let processed = Number(config.processed || 0);
+                let imported = Number(config.imported || 0);
+                let importLimit = Number(config.import_limit || 0);
                 let skipped = Number(config.skipped || 0);
                 let failed = Number(config.failed || 0);
                 let errors = Array.isArray(config.errors) ? config.errors.slice() : [];
@@ -6588,6 +6635,7 @@ final class TAQI_Life_Dropshipping {
                             import_category_path: config.import_category_path || '',
                             supplier_category_filter: config.supplier_category_filter || '',
                             skip_images: config.skip_images ? 'true' : 'false',
+                            batch_import_limit: String(importLimit || 0),
                             nonce: batchNonce
                         });
                         const response = await fetch(ajaxurl, {
@@ -6608,6 +6656,8 @@ final class TAQI_Life_Dropshipping {
                             lastCheckpoint = data.checkpoint;
                             serverCheckpoint = data.checkpoint;
                             processed = Number(data.checkpoint.processed || 0);
+                            imported = Number(data.checkpoint.imported || 0);
+                            importLimit = Number(data.checkpoint.import_limit || importLimit || 0);
                             skipped = Number(data.checkpoint.skipped || 0);
                             failed = Number(data.checkpoint.failed || 0);
                             errors = Array.isArray(data.checkpoint.errors) ? data.checkpoint.errors.slice() : errors;
@@ -6616,6 +6666,7 @@ final class TAQI_Life_Dropshipping {
                             item = Number(data.checkpoint.item || 0);
                         } else {
                             processed += Number(data.processed || 0);
+                            imported += Number(data.imported || 0);
                             skipped += Number(data.skipped || 0);
                             failed += Number(data.failed || 0);
                             if (Array.isArray(data.errors)) errors = errors.concat(data.errors);
@@ -6630,7 +6681,8 @@ final class TAQI_Life_Dropshipping {
                         }
                         bar.max = count || 1;
                         bar.value = count ? Math.min(responseNextItem, count) : 1;
-                        detail.textContent = 'Page ' + currentPage + ' of ' + total + ' · product ' + Math.min(responseNextItem, count) + ' of ' + count + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
+                        const importDetail = importLimit ? ' · imported ' + imported + ' of ' + importLimit : '';
+                        detail.textContent = 'Page ' + currentPage + ' of ' + total + ' · product ' + Math.min(responseNextItem, count) + ' of ' + count + importDetail + ' · processed ' + processed + ' · skipped ' + skipped + ' · failed ' + failed;
                         if (errors.length) detail.title = errors.join('\n');
                         if (data.done || (lastCheckpoint && lastCheckpoint.status === 'complete')) break;
                     }
@@ -6642,7 +6694,7 @@ final class TAQI_Life_Dropshipping {
                     } else {
                         serverCheckpoint = null;
                         showResumeNotice(null);
-                        label.textContent = failed ? 'Batch operation completed with errors; failed items were skipped.' : 'Batch operation completed.';
+                        label.textContent = failed ? 'Batch operation completed with errors; failed items were skipped.' : (importLimit ? 'Requested import count reached or no more matching products remain.' : 'Batch operation completed.');
                     }
                 } catch (error) {
                     if (batchCancelled) {

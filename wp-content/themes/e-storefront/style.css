@@ -1152,12 +1152,31 @@ a.components-button.wc-block-components-button.wp-element-button.wc-block-cart__
 .wc-block-components-button:not(.is-link) {
   padding: 0px !important;
 }
-.wc-block-components-sidebar,.wc-block-components-sidebar-layout .wc-block-components-main{
-  width: 100% !important;
+/* Keep the Checkout block in WooCommerce's intended two-column layout. */
+@media screen and (min-width: 782px) {
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-flow: row nowrap;
+    gap: 32px;
+  }
+
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-main {
+    width: auto !important;
+    min-width: 0;
+    padding-right: 0 !important;
+  }
+
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-sidebar {
+    width: 380px !important;
+    flex: 0 0 380px;
+  }
 }
-.wc-block-components-sidebar-layout.wc-block-checkout.is-large {
-    flex-flow: column;
-    flex-direction: column-reverse;
+
+@media screen and (max-width: 781px) {
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-sidebar {
+    width: 100% !important;
+  }
 }
 
 /* ===============================================
@@ -1921,51 +1940,79 @@ body.dark-mode .sidebar-area .sidebar-widget,body.dark-mode .media-body-wrap.car
   }
 }
 
-/* Keep the complete storefront menu on one horizontal line on desktop. */
+/*
+ * Desktop header: the primary menu is flexible, but is always contained inside
+ * the header. The former max-content rule let a long menu paint over page and
+ * checkout content instead of reserving space for it.
+ */
 @media screen and (min-width: 1001px) {
-  .header-outter .top-menu-wrapper,
+  .header-outter {
+    border-bottom: 1px solid #e6e9ef;
+  }
+
+  .header-outter .container {
+    max-width: 1500px;
+  }
+
+  .header-outter .row {
+    flex-wrap: nowrap;
+  }
+
+  .header-outter .storefront-primary-menu {
+    min-width: 0;
+  }
+
+  .header-outter .top-menu-wrapper {
+    min-width: 0;
+    padding: 12px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
   .header-outter #mySidenav,
-  .header-outter #mySidenav .main-navigation {
-    width: max-content;
-    max-width: none;
-  }
-
-  .header-outter #mySidenav .main-navigation .menu {
-    width: max-content;
-    max-width: none;
-    flex-wrap: nowrap !important;
-    gap: 5px 18px;
-    white-space: nowrap;
-  }
-
-  .header-outter #mySidenav .main-navigation .menu > li > a {
-    font-size: 14px;
-    white-space: nowrap;
-  }
-}
-
-/* Final desktop menu override: the WordPress menu itself must never wrap. */
-@media screen and (min-width: 1001px) {
   .header-outter .main-navigation,
-  .header-outter .main-navigation .navi,
-  .header-outter .main-navigation ul.menu {
+  .header-outter .main-navigation .navi {
     display: block !important;
-    width: max-content !important;
-    max-width: none !important;
-    overflow: visible !important;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 
   .header-outter .main-navigation ul.menu {
     display: flex !important;
-    align-items: center !important;
+    align-items: center;
     flex-wrap: nowrap !important;
-    gap: 0 16px !important;
-    white-space: nowrap !important;
+    gap: 0 14px !important;
+    width: max-content;
+    min-width: 100%;
+    margin: 0;
+    padding: 0;
+    white-space: nowrap;
   }
 
   .header-outter .main-navigation ul.menu > li {
     display: block !important;
-    flex: 0 0 auto !important;
-    white-space: nowrap !important;
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
+
+  .header-outter .main-navigation ul.menu > li > a {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .header-outter .nav-box,
+  .header-outter .admin-box {
+    flex: 0 0 auto;
+    width: auto;
+    max-width: none;
+  }
+}
+
+/* WooCommerce pages do not use the theme's image-only page banner. */
+body.woocommerce-cart .feature-header,
+body.woocommerce-checkout .feature-header,
+body.woocommerce-account .feature-header {
+  display: none;
 }

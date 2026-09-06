@@ -188,10 +188,29 @@ a.components-button.wc-block-components-button.wp-element-button.wc-block-cart__
 .wc-block-components-button:not(.is-link) {
   padding: 0px !important;
 }
-.wc-block-components-sidebar,.wc-block-components-sidebar-layout .wc-block-components-main{
-  width: 100% !important;
+/* Keep the Checkout block in WooCommerce's intended two-column layout. */
+@media screen and (min-width: 782px) {
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-flow: row nowrap;
+    gap: 32px;
+  }
+
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-main {
+    width: auto !important;
+    min-width: 0;
+    padding-right: 0 !important;
+  }
+
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-sidebar {
+    width: 380px !important;
+    flex: 0 0 380px;
+  }
 }
-.wc-block-components-sidebar-layout.wc-block-checkout.is-large {
-    flex-flow: column;
-    flex-direction: column-reverse;
+
+@media screen and (max-width: 781px) {
+  .wc-block-components-sidebar-layout.wc-block-checkout.is-large .wc-block-components-sidebar {
+    width: 100% !important;
+  }
 }

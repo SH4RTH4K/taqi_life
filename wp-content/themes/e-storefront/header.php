@@ -31,7 +31,7 @@
 <?php endif; ?>
 
 <div class="<?php if( get_theme_mod( 'e_storefront_sticky_header', false) != '') { ?>sticky-header<?php } else { ?>close-sticky main-menus<?php } ?>">
-	<header id="site-navigation">
+	<header id="site-header">
 		<div class="header-inner py-2">
 			<div class="container">
 				<div class="row">
@@ -85,7 +85,7 @@
 		<div class="header-outter py-2">
 			<div class="container">
 				<div class="row">
-					<div class="col-lg-2 col-md-8 align-self-center">
+					<div class="col-xl-2 col-lg-2 col-md-8 align-self-center">
 						<div class="logo text-start">
 				    		<div class="logo-image">
 				    			<?php the_custom_logo(); ?>
@@ -105,7 +105,7 @@
 							</div>
 						</div>
 					</div>
-					<div class="col-lg-5 col-md-4 align-self-center">
+					<div class="col-xl col-lg col-md-4 align-self-center storefront-primary-menu">
 							<div class="top-menu-wrapper">
 							    <div class="navigation_header">
 							        <div class="toggle-nav mobile-menu">
@@ -134,7 +134,7 @@
 							    </div>
 							</div>
 					</div>
-					<div class="col-lg-3 col-md-6 col-sm-6 text-center text-md-end align-self-center nav-box">
+					<div class="col-xl-auto col-lg-auto col-md-6 col-sm-6 text-center text-md-end align-self-center nav-box">
 						<?php if ( get_theme_mod('e_storefront_wislist_url')) : ?>
 							<a href="<?php echo esc_url( get_theme_mod('e_storefront_wislist_url' ) ); ?>" class="myacunt-url me-3"><i class="fas fa-heart"></i></a>
 						<?php endif; ?>
@@ -146,7 +146,7 @@
 						<?php endif; ?>
 						
 					</div>
-					<div class="col-lg-2 col-md-6 col-sm-6 text-center text-md-end align-self-center admin-box ">
+					<div class="col-xl-auto col-lg-auto col-md-6 col-sm-6 text-center text-md-end align-self-center admin-box ">
 						<div class="row">
 							<div class="col-lg-3 col-md-4 col-sm-4 col-4 admin-icon align-self-center">
 								<?php if(class_exists('woocommerce')){ ?>
